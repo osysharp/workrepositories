@@ -1,0 +1,380 @@
+// The items of an assignment's repository, and every version of each.
+namespace Osysharp.WorkRepositories;
+
+using Osysharp.Identity;
+using Osysharp.Storage;
+using Osysharp.Assignments;
+
+/// Who or what wrote something. ⚠ Appended, never inserted: an enum is stored by position.
+public enum ContributorKind {
+  /// Somebody signed in.
+  [Label("Person")] Person,
+  /// A declared actor — an agent's own account, a robot, an integration.
+  [Label("Actor")] Actor,
+  /// The app itself: a process, a handler, a schedule.
+  [Label("System")] System,
+}
+
+/// The number each item of one assignment's repository is given as it is added.
+Counter RepositoryItemNumber = new() { Start = 0 };
+
+/// ⭐ ONE THING AN ASSIGNMENT KNOWS: a piece of evidence, a letter, a finding, a document, a decision.
+///
+/// Its content is in its versions (`RepositoryItemVersion`): the item says what kind of thing it is, where it stands,
+/// which version stands, and whether a contribution is waiting beside it to be reconciled. Made and changed only by
+/// this package's own functions.
+[Unique(Assignment, Key)]
+public entity RepositoryItem {
+  [Required, Immutable, Index] Assignment Assignment;
+  /// Its number in the assignment's repository, from 1, in the order items were added — "item 7".
+  [Counter(RepositoryItemNumber, scope = Assignment)] int Number;
+  [Immutable] ItemKind Kind = ItemKind.Input;
+  /// What it is called in a list.
+  [Required, MaxLength(300), Classification(Personal.Content)] string Title;
+  /// What it is found by. One item per key on an assignment; a key nobody gave is the row's own id.
+  [Required, Immutable, MaxLength(200)] string Key;
+
+  ItemStanding Standing = ItemStanding.Unverified;
+  /// Why it stands where it does, who said so and when.
+  [MaxLength(600), Classification(Personal.Content)] string StandingWhy = "";
+  [Classification(Personal.Identity)] Principal? StandingBy;
+  DateTime? StandingAt;
+  /// The item that took its place, when it is superseded.
+  RepositoryItem? SupersededBy;
+
+  /// Fewer people see it: whoever added it, and whoever its kind — or this item — was opened to.
+  bool Restricted = false;
+
+  /// The number of its newest version, the number of the version that STANDS, and how many contributions are kept
+  /// beside that one, waiting to be reconciled.
+  [ConcurrencyCheck] int Latest = 0;
+  int Current = 0;
+  int Unreconciled = 0;
+
+  /// Who or what added it. Nobody: the app itself — or, when `AddedAs` says a person or an actor, somebody who has
+  /// since been taken off it (`TakeContributorOffRepositories`).
+  [Classification(Personal.Identity)] Principal? AddedBy;
+  [Immutable] ContributorKind AddedAs = ContributorKind.Person;
+  [Immutable, Index] DateTime AddedAt = DateTime.UtcNow;
+
+  /// When it has outlived the time its kind is kept. Null: it is kept as long as the assignment is.
+  DateTime? RetainUntil;
+  /// When its content was erased, and why. The item stays, to say that there was one.
+  DateTime? ErasedAt;
+  [MaxLength(300)] string ErasedWhy = "";
+
+  [ForeignKey(Item)] RepositoryItemVersion[] Versions;
+
+  security {
+    // Whoever is on the assignment reads what is not restricted; a restricted item is read by whoever added it and
+    // by whoever its kind was opened to.
+    allow read when IsAuthenticated where AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user)
+      && (!Restricted || AddedBy == user
+          || RepositoryShare.Any(s => s.Assignment.Id == Assignment.Id && s.Item == null && s.Kind == Kind && s.Person == user));
+    // An item opened to somebody by itself is theirs to read, on the assignment or not.
+    allow read when IsAuthenticated where RepositoryShare.Any(s => s.Item.Id == Id && s.Person == user);
+    allow read when OverseesAssignments where !Restricted;
+    allow read when ManagesWorkRepositories;
+    // Made only inside this package's own functions, each of which writes the assignment's activity — so whoever may
+    // not change the assignment adds nothing to its repository.
+    allow create when IsAuthenticated where AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user && p.Acts);
+    allow create when OverseesAssignments || ManagesWorkRepositories;
+    allow update when IsAuthenticated where AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user && p.Acts);
+    allow update when OverseesAssignments || ManagesWorkRepositories;
+    deny create except via AddItem;
+    deny update Latest, Current, Unreconciled except via ReviseItem, ReconcileItem;
+    deny update Standing, StandingAt, SupersededBy except via SettleItem;
+    // Why it stands where it does goes when the item is erased; who said so, when they are taken off it.
+    deny update StandingWhy except via SettleItem, EraseItem;
+    deny update StandingBy except via SettleItem, TakeContributorOffRepositories;
+    deny update AddedBy except via TakeContributorOffRepositories;
+    deny update Restricted except via RestrictItem;
+    deny update RetainUntil except via StampRetention, EraseItem, KeepItemUntil;
+    deny update Title, ErasedAt, ErasedWhy except via EraseItem;
+    deny delete;
+  }
+}
+
+/// ⭐ ONE VERSION OF AN ITEM: its content as one contributor wrote it, who or what that was, when, and what it was
+/// read from. A version is never changed; a change is another version.
+///
+/// (Erasing an item — its time is up, or the person it is about asked — empties its versions and leaves them in
+/// place, so the item's history still says what happened to it.)
+[Unique(Item, Number)]
+public entity RepositoryItemVersion {
+  [Required, Immutable, Index] RepositoryItem Item;
+  /// Its place in the item's history, from 1.
+  [Immutable] int Number = 1;
+  /// The assignment, the item's kind, and whether it is restricted — the item's own, kept here so a version is read
+  /// by exactly whoever reads its item.
+  [Required, Immutable, Index] Assignment Assignment;
+  [Immutable] ItemKind Kind = ItemKind.Input;
+  bool Restricted = false;
+  [Classification(Personal.Identity)] Principal? ItemAddedBy;
+
+  /// What it says: text, or a document as text.
+  [Classification(Personal.Content)] string Content = "";
+  /// What kind of text — "text/plain", "text/markdown", "application/json".
+  [Immutable, MaxLength(100)] string ContentType = "text/plain";
+  /// The same as structured data, when it is data: the fields read out of an invoice, a measurement.
+  Json? Data;
+  /// The file it is, when it is one. Read by exactly whoever reads this version.
+  [Attachment] FileAsset? File;
+  /// What changed in this version, in a few words.
+  [MaxLength(600), Classification(Personal.Content)] string Note = "";
+
+  /// The version its contributor had read when they wrote this one. Null: the first.
+  [Immutable] int? BasedOn;
+  /// It did not start from the version that stood when it arrived: it is kept BESIDE that one, and the item says it
+  /// has something to reconcile.
+  bool Unreconciled = false;
+
+  /// Who or what wrote it. Nobody: the app itself — or, when `AddedAs` says a person or an actor, somebody who has
+  /// since been taken off it.
+  [Classification(Personal.Identity)] Principal? By;
+  [Immutable] ContributorKind AddedAs = ContributorKind.Person;
+  [Immutable, Index] DateTime At = DateTime.UtcNow;
+
+  /// Where it came from, in words — "the carrier's tracking page", "a call with the customer on 12 March" — and,
+  /// when it came from a row, that row.
+  [MaxLength(600), Classification(Personal.Content)] string From = "";
+  [Immutable] Guid? SourceRef;
+  [Immutable, MaxLength(200)] string SourceType = "";
+  /// When an agent wrote it: the agent, the skill and its version, the model that did the work, the tool whose
+  /// answer it holds, and the piece of work it was written in.
+  [Immutable, MaxLength(200)] string Agent = "";
+  [Immutable, MaxLength(200)] string Skill = "";
+  [Immutable, MaxLength(40)] string SkillVersion = "";
+  [Immutable, MaxLength(200)] string Model = "";
+  [Immutable, MaxLength(200)] string Tool = "";
+  [Immutable] Guid? Task;
+
+  security {
+    allow read when IsAuthenticated where AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user)
+      && (!Restricted || ItemAddedBy == user
+          || RepositoryShare.Any(s => s.Assignment.Id == Assignment.Id && s.Item == null && s.Kind == Kind && s.Person == user));
+    allow read when IsAuthenticated where RepositoryShare.Any(s => s.Item.Id == Item.Id && s.Person == user);
+    allow read when OverseesAssignments where !Restricted;
+    allow read when ManagesWorkRepositories;
+    allow create when IsAuthenticated where AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user && p.Acts);
+    allow create when OverseesAssignments || ManagesWorkRepositories;
+    allow update when IsAuthenticated where AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user && p.Acts);
+    allow update when OverseesAssignments || ManagesWorkRepositories;
+    deny create except via AddItem, ReviseItem, ReconcileItem;
+    deny update Content, Data, File, Note, From except via EraseItem;
+    deny update By, ItemAddedBy except via TakeContributorOffRepositories;
+    deny update Unreconciled except via ReconcileItem;
+    deny update Restricted except via RestrictItem;
+    deny delete;
+  }
+}
+
+// ── adding ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Where a version came from.
+public class ItemSource {
+  /// In words: "the carrier's tracking page", "the customer, by phone".
+  public string From = "";
+  /// The row it was read from, and what kind of row: an order, a message, a tool's result.
+  public Guid? Ref;
+  public string RefType = "";
+  /// When an agent wrote it: the agent, the skill and its version, the model, the tool, and the piece of work.
+  public string Agent = "";
+  public string Skill = "";
+  public string SkillVersion = "";
+  public string Model = "";
+  public string Tool = "";
+  public Guid? Task;
+}
+
+/// What an item is added with.
+public class NewItem {
+  public ItemKind Kind = ItemKind.Input;
+  public string Title = "";
+  public string Content = "";
+  public string ContentType = "text/plain";
+  /// The same as structured data, as JSON text. "": none.
+  public string DataJson = "";
+  public FileAsset? File;
+  /// What it is found by: add again with the same key and the item already there is answered, unchanged.
+  public string Key = "";
+  public ItemSource Source = new ItemSource();
+  /// Whether fewer people see it. Null: as the app's rule for its kind says.
+  public bool? Restricted;
+}
+
+/// ⭐ ADD AN ITEM to an assignment's repository. Whoever is signed in — or the actor whose block is running — is who
+/// added it; a process adds as the app itself.
+///
+///     var scan = AddItem(a, new NewItem {
+///       Kind = ItemKind.Evidence, Title = "Carrier scan, 12 March", Content = "Scanned at the Malmö depot at 06:12.",
+///       Source = new ItemSource { From = "The carrier's tracking page" },
+///     });
+///
+/// Evidence, findings, decisions, documents and deliverables are PROGRESS on the assignment, and point at the item;
+/// correspondence and proposals are activity.
+[Server, Authorize(IsAuthenticated)]
+public RepositoryItem AddItem(Assignment a, NewItem what) {
+  if (what.Key != "") {
+    var there = RepositoryItem.FirstOrDefault(i => i.Assignment == a && i.Key == what.Key);
+    if (there != null) { return there!; }
+  }
+  if (what.Title.Trim() == "") { throw new ValidationException("An item says what it is: its `Title`."); }
+  var rule = RuleFor(what.Kind);
+  var restricted = what.Restricted ?? rule.Restricted;
+  var who = Contributor();
+  var how = ContributorOf(who);
+  var now = DateTime.UtcNow;
+  var id = Guid.NewGuid();
+  var item = new RepositoryItem {
+    Id = id, Assignment = a, Kind = what.Kind, Title = Clip(what.Title.Trim(), 300), Key = what.Key == "" ? id.ToString() : what.Key,
+    Restricted = restricted, Latest = 1, Current = 1, AddedBy = who, AddedAs = how, AddedAt = now,
+    RetainUntil = rule.RetainFor != null && rule.From == RetainFrom.Added ? now + rule.RetainFor! : null,
+  };
+  new RepositoryItemVersion {
+    Item = item, Number = 1, Assignment = a, Kind = what.Kind, Restricted = restricted, ItemAddedBy = who,
+    Content = what.Content, ContentType = what.ContentType, Data = what.DataJson == "" ? null : what.DataJson, File = what.File,
+    By = who, AddedAs = how, At = now,
+    From = Clip(what.Source.From, 600), SourceRef = what.Source.Ref, SourceType = what.Source.RefType,
+    Agent = what.Source.Agent, Skill = what.Source.Skill, SkillVersion = what.Source.SkillVersion, Model = what.Source.Model,
+    Tool = what.Source.Tool, Task = what.Source.Task,
+  };
+  // The line on the assignment never says more than everybody on it may read.
+  var said = restricted ? $"{KindWords(what.Kind)} added (restricted)." : $"{KindWords(what.Kind)} added: {item.Title}";
+  if (a.State == AssignmentState.Open && IsProgress(what.Kind)) { NoteProgress(a, said, item.Id, "RepositoryItem"); }
+  else { NoteActivity(a, ActivityKind.Note, said); }
+  Raise(new RepositoryItemAdded { Item = item });
+  return item;
+}
+
+/// The item of `a` called `key`, or null.
+public RepositoryItem? ItemOf(Assignment a, string key) {
+  return RepositoryItem.FirstOrDefault(i => i.Assignment == a && i.Key == key);
+}
+
+/// The items of an assignment's repository, oldest first — of one kind, or of every kind. Each reader gets the ones
+/// they may read.
+public List<RepositoryItem> ItemsOf(Assignment a, ItemKind? kind = null) {
+  return kind == null
+    ? RepositoryItem.Where(i => i.Assignment == a).OrderBy(i => i.Number).ToList()
+    : RepositoryItem.Where(i => i.Assignment == a && i.Kind == kind).OrderBy(i => i.Number).ToList();
+}
+
+/// The version of an item that stands.
+public RepositoryItemVersion CurrentOf(RepositoryItem item) {
+  return RepositoryItemVersion.Single(v => v.Item == item && v.Number == item.Current);
+}
+
+/// Every version of an item, oldest first.
+public List<RepositoryItemVersion> VersionsOf(RepositoryItem item) {
+  return RepositoryItemVersion.Where(v => v.Item == item).OrderBy(v => v.Number).ToList();
+}
+
+// ── changing: a version more, never an overwrite ────────────────────────────────────────────────────────────────────
+
+/// What a new version of an item says.
+public class ItemRevision {
+  public string Content = "";
+  /// Null: as the version it was based on.
+  public string? ContentType;
+  public string DataJson = "";
+  public FileAsset? File;
+  /// What changed, in a few words.
+  public string Note = "";
+  public ItemSource Source = new ItemSource();
+}
+
+/// ⭐ CHANGE AN ITEM — which adds a version and overwrites nothing. `basedOn` is the number of the version the
+/// contributor had read.
+///
+/// When that is the version that stands, theirs stands now. When somebody else's version has come to stand in the
+/// meantime, BOTH are kept: the new one is put beside it as unreconciled, the item counts it (`Unreconciled`), and
+/// somebody settles it with `ReconcileItem`. Nobody's contribution is lost, and nobody's silently wins.
+///
+///     ReviseItem(scan, new ItemRevision { Content = "…out for delivery at 14:40.", Note = "A second scan" }, basedOn: 1);
+[Server, Authorize(IsAuthenticated)]
+public RepositoryItemVersion ReviseItem(RepositoryItem item, ItemRevision change, int basedOn) {
+  if (item.ErasedAt != null) { throw new RepositoryRefused($"“{item.Title}” was erased; nothing is added to it."); }
+  if (basedOn < 1 || basedOn > item.Latest) {
+    throw new ValidationException($"“{item.Title}” has versions 1 to {item.Latest}; say which one this change was based on.");
+  }
+  var basis = RepositoryItemVersion.Single(v => v.Item == item && v.Number == basedOn);
+  var who = Contributor();
+  var number = item.Latest + 1;
+  var beside = basedOn != item.Current;
+  item.Latest = number;
+  if (beside) { item.Unreconciled = item.Unreconciled + 1; } else { item.Current = number; }
+  var version = new RepositoryItemVersion {
+    Item = item, Number = number, Assignment = item.Assignment, Kind = item.Kind, Restricted = item.Restricted, ItemAddedBy = item.AddedBy,
+    Content = change.Content, ContentType = change.ContentType ?? basis.ContentType,
+    Data = change.DataJson == "" ? null : change.DataJson, File = change.File, Note = Clip(change.Note, 600),
+    BasedOn = basedOn, Unreconciled = beside, By = who, AddedAs = ContributorOf(who),
+    From = Clip(change.Source.From, 600), SourceRef = change.Source.Ref, SourceType = change.Source.RefType,
+    Agent = change.Source.Agent, Skill = change.Source.Skill, SkillVersion = change.Source.SkillVersion, Model = change.Source.Model,
+    Tool = change.Source.Tool, Task = change.Source.Task,
+  };
+  var name = item.Restricted ? "A restricted item" : "“" + item.Title + "”";
+  NoteActivity(item.Assignment, ActivityKind.Note, beside
+    ? $"{name} has a contribution to reconcile: version {number} was written from version {basedOn}, and version {item.Current} stands."
+    : $"{name} was revised (version {number})" + (version.Note == "" ? "." : ": " + version.Note));
+  if (beside) { Raise(new RepositoryItemContested { Item = item, Version = number }); }
+  return version;
+}
+
+/// ⭐ SETTLE THE CONTRIBUTIONS KEPT BESIDE AN ITEM'S STANDING VERSION. Either one of its versions is chosen to stand
+/// (`keep`), or — with `merged` — a new version that takes from several is written and stands. Every version stays
+/// in the item's history either way.
+///
+///     ReconcileItem(notes, keep: 3, why: "The later measurement is the right one");
+[Server, Authorize(IsAuthenticated)]
+public RepositoryItemVersion ReconcileItem(RepositoryItem item, int keep, string why, ItemRevision? merged = null) {
+  if (item.ErasedAt != null) { throw new RepositoryRefused($"“{item.Title}” was erased."); }
+  if (why.Trim() == "") { throw new ValidationException("Say how it was settled: it is kept with the item."); }
+  var chosen = RepositoryItemVersion.FirstOrDefault(v => v.Item == item && v.Number == keep);
+  if (chosen == null) { throw new ValidationException($"“{item.Title}” has no version {keep}."); }
+  var stands = chosen!;
+  if (merged != null) {
+    var who = Contributor();
+    var number = item.Latest + 1;
+    item.Latest = number;
+    stands = new RepositoryItemVersion {
+      Item = item, Number = number, Assignment = item.Assignment, Kind = item.Kind, Restricted = item.Restricted, ItemAddedBy = item.AddedBy,
+      Content = merged!.Content, ContentType = merged!.ContentType ?? chosen!.ContentType,
+      Data = merged!.DataJson == "" ? null : merged!.DataJson, File = merged!.File,
+      Note = Clip(merged!.Note == "" ? "Reconciled: " + why.Trim() : merged!.Note, 600), BasedOn = keep,
+      By = who, AddedAs = ContributorOf(who), From = Clip(merged!.Source.From, 600), SourceRef = merged!.Source.Ref, SourceType = merged!.Source.RefType,
+    };
+  }
+  foreach (var v in RepositoryItemVersion.Where(v => v.Item == item && v.Unreconciled).ToList()) { v.Unreconciled = false; }
+  item.Current = stands.Number;
+  item.Unreconciled = 0;
+  var name = item.Restricted ? "A restricted item" : "“" + item.Title + "”";
+  NoteActivity(item.Assignment, ActivityKind.Note, $"{name} was reconciled: version {stands.Number} stands. {why.Trim()}");
+  return stands;
+}
+
+// ── who or what is writing ──────────────────────────────────────────────────────────────────────────────────────────
+
+/// Whoever is signed in, or the actor whose block is running. Null: the app itself.
+Principal? Contributor() {
+  var me = Security.CurrentUserId;
+  return me == null ? null : Principal.FirstOrDefault(p => p.Id == me);
+}
+
+/// What kind of contributor `who` is: the app itself, a declared actor, or a person.
+ContributorKind ContributorOf(Principal? who) {
+  if (who == null) { return ContributorKind.System; }
+  try { Actor.From(who!); return ContributorKind.Actor; }
+  catch (Exception e) { return ContributorKind.Person; }
+}
+
+/// Whether adding an item of this kind establishes something on its assignment.
+bool IsProgress(ItemKind kind) { return kind != ItemKind.Correspondence && kind != ItemKind.Proposal; }
+
+string KindWords(ItemKind kind) {
+  return kind == ItemKind.Input ? "Input" : kind == ItemKind.Document ? "Document" : kind == ItemKind.Extracted ? "Extracted data"
+       : kind == ItemKind.Evidence ? "Evidence" : kind == ItemKind.Correspondence ? "Correspondence" : kind == ItemKind.Finding ? "Finding"
+       : kind == ItemKind.Proposal ? "Proposal" : kind == ItemKind.Decision ? "Decision" : "Deliverable";
+}
+
+string Clip(string text, int max) { return text.Length <= max ? text : text.Substring(0, max); }

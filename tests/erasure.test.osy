@@ -1,0 +1,147 @@
+// Osysharp.WorkRepositories — erasing: an item's words go from everywhere they were written, the item's place in the
+// record stays; and somebody who contributed can be taken off what they added, which stays.
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+using Hiring;
+
+[Test(Office)]
+void erasing_an_item_takes_its_words_from_every_version_and_its_title_from_the_hires_activity() {
+  var hire = OpenTheHire();
+  Guid cv = Guid.Empty;
+  Guid role = Guid.Empty;
+  runas (Rut) {
+    cv = AddItem(Hire(hire), new NewItem {
+      Kind = ItemKind.Document, Title = "Application: M. Okafor", Content = "Ten years of rollouts.",
+      Source = new ItemSource { From = "M. Okafor's mail of 2 March" } }).Id;
+    ReviseItem(Item(cv), new ItemRevision { Content = "Ten years of rollouts; two as lead.", Note = "M. Okafor sent a longer CV" }, basedOn: 1);
+    role = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "The role", Content = "Senior consultant." }).Id;
+    AcceptItem(Item(cv), "M. Okafor meets the bar.");
+    Assert.Contains("Application: M. Okafor", ActivityText(Hire(hire)));
+  }
+
+  // The candidate withdraws. The records officer — who may also erase from a hire's activity — erases the application.
+  runas (Otto) { EraseItem(Item(cv), "The candidate withdrew."); }
+  Background.Settle();
+
+  runas (Rut) {
+    var erased = Item(cv);
+    // What it said is gone from every version — and so is what was written ABOUT it: what changed, where it came
+    // from, why it was accepted.
+    foreach (var v in VersionsOf(erased)) {
+      Assert.Equal("", v.Content);
+      Assert.Equal("", v.Note);
+      Assert.Equal("", v.From);
+    }
+    Assert.Equal("", erased.StandingWhy);
+    Assert.Equal("Document (erased)", erased.Title);
+    // Its place in the record stays: that there was one, what kind, who added it and when, how many versions, where
+    // it stood, that it was erased and why.
+    Assert.Equal(ItemKind.Document, erased.Kind);
+    Assert.Equal(Rut.Id, erased.AddedBy!.Id);
+    Assert.Equal(2, VersionsOf(erased).Count);
+    Assert.Equal(ItemStanding.Accepted, erased.Standing);
+    Assert.NotNull(erased.ErasedAt);
+    Assert.Equal("The candidate withdrew.", erased.ErasedWhy);
+    // The hire's activity no longer names it, line for line — and still says what happened.
+    var activity = ActivityText(Hire(hire));
+    Assert.DoesNotContain("Okafor", activity);
+    Assert.DoesNotContain("meets the bar", activity);
+    Assert.Contains("Document added: an item that was erased", activity);
+    Assert.Contains("“an item that was erased” was revised (version 2): (erased)", activity);
+    Assert.Contains("An item was erased: The candidate withdrew.", activity);
+    // The role beside it is untouched.
+    Assert.Equal("Senior consultant.", CurrentOf(Item(role)).Content);
+    Assert.Contains("Input added: The role", activity);
+  }
+}
+
+[Test(Office)]
+void whoever_is_in_charge_erases_an_item_and_only_the_records_officer_erases_from_the_activity() {
+  var hire = OpenTheHire();
+  Guid cv = Guid.Empty;
+  runas (Rut) { cv = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Document, Title = "Application: S. Lind", Content = "Six years." }).Id; }
+  // Rut owns the hire: she erases the item. She may not erase from an assignment's activity, so the line that named
+  // the application stands until somebody who may takes it out.
+  runas (Rut) { EraseItem(Item(cv), "Sent to us by mistake."); }
+  Background.Settle();
+  runas (Rut) {
+    Assert.Equal("", CurrentOf(Item(cv)).Content);
+    Assert.Contains("Application: S. Lind", ActivityText(Hire(hire)));
+    Assert.Denied(() => EraseWordsFromActivity(Hire(hire), ["Application: S. Lind"], "an item that was erased", "Tidying up."));
+  }
+  runas (Otto) { Assert.Equal(1, EraseWordsFromActivity(Hire(hire), ["Application: S. Lind"], "an item that was erased", "The item it named was erased.")); }
+  runas (Rut) { Assert.DoesNotContain("Lind", ActivityText(Hire(hire))); }
+}
+
+[Test(Office)]
+void a_contributor_taken_off_leaves_what_they_added_and_reads_as_somebody_no_longer_here() {
+  var hire = OpenTheHire();
+  Guid ivos = Guid.Empty;
+  Guid lenas = Guid.Empty;
+  runas (Ivo)  { ivos = GiveFeedback(Hire(hire), "M. Okafor", "Would not hire: thin on migrations.").Id; }
+  runas (Lena) { lenas = GiveFeedback(Hire(hire), "M. Okafor", "Hire.").Id; }
+  // The hiring manager reads all the feedback — and, for now, so does Ivo.
+  runas (Rut)  { OpenKindTo(Hire(hire), ItemKind.Finding, Hanna); OpenKindTo(Hire(hire), ItemKind.Finding, Ivo); }
+  runas (Ivo)  { Assert.Equal(2, ItemsOf(Hire(hire), ItemKind.Finding).Count); }
+  var ivo = Ivo.Id;
+
+  runas (Otto) { Assert.Equal(2, TakeContributorOffRepositories(Ivo, "He left and asked to be erased.")); }
+
+  // What he added is all there, word for word — and nobody's.
+  runas (Hanna) {
+    var item = Item(ivos);
+    Assert.Null(item.AddedBy);
+    Assert.Null(CurrentOf(item).By);
+    Assert.Equal("Would not hire: thin on migrations.", CurrentOf(item).Content);
+    Assert.Equal(ContributorKind.Person, item.AddedAs);
+    // A page says who added it as somebody no longer here — never as the app.
+    Assert.StartsWith("Somebody no longer here · ", ItemSheetOf(ivos)!.Item.Added);
+    Assert.Equal("Somebody no longer here", ItemSheetOf(ivos)!.Versions.First().By);
+    // Lena's feedback is hers still.
+    Assert.Equal(Lena.Id, Item(lenas).AddedBy!.Id);
+  }
+  runas (Otto) {
+    Assert.Equal(0, RepositoryItem.Count(i => i.AddedBy != null && i.AddedBy.Id == ivo));
+    Assert.Equal(0, RepositoryItemVersion.Count(v => v.By != null && v.By.Id == ivo));
+    // What was opened to him is closed.
+    Assert.Equal(0, RepositoryShare.Count(s => s.Person.Id == ivo));
+  }
+  // He is still on the hire, and no longer reads the restricted feedback: it is not his any more.
+  runas (Ivo) { Assert.Equal(0, ItemsOf(Hire(hire), ItemKind.Finding).Count); }
+  // Lena reads her own as before, and not his.
+  runas (Lena) { Assert.Equal(1, ItemsOf(Hire(hire), ItemKind.Finding).Count); }
+}
+
+[Test(Office)]
+void only_whoever_looks_after_the_repositories_takes_a_contributor_off_or_moves_a_date() {
+  var hire = OpenTheHire();
+  Guid ivos = Guid.Empty;
+  Guid role = Guid.Empty;
+  runas (Ivo) { ivos = GiveFeedback(Hire(hire), "M. Okafor", "Would not hire.").Id; }
+  runas (Rut) { role = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "The role", Content = "Senior consultant." }).Id; }
+  // The hiring manager and the recruiter who owns the hire may not.
+  runas (Hanna) { Assert.Denied(() => TakeContributorOffRepositories(Ivo, "Tidying up.")); }
+  runas (Rut) {
+    Assert.Denied(() => TakeContributorOffRepositories(Ivo, "Tidying up."));
+    Assert.Denied(() => KeepItemUntil(Item(role), DateTime.UtcNow.AddDays(1)));
+  }
+  // Nor does anybody by hand — the records officer included.
+  runas (Ivo) {
+    Assert.Denied(() => { DisownItem(Item(ivos)); UnitOfWork.Commit(); });
+    UnitOfWork.Discard();
+  }
+  runas (Otto) {
+    Assert.Denied(() => { DisownItem(Item(ivos)); UnitOfWork.Commit(); });
+    UnitOfWork.Discard();
+    Assert.Denied(() => { BlankNote(CurrentOf(Item(ivos))); UnitOfWork.Commit(); });
+    UnitOfWork.Discard();
+    Assert.Equal(Ivo.Id, Item(ivos).AddedBy!.Id);
+    // Positive control: through the kit, the records officer does both.
+    var until = new DateTime(2027, 1, 1);
+    KeepItemUntil(Item(ivos), until);
+    Assert.Equal(until, Item(ivos).RetainUntil);
+    Assert.Equal(2, TakeContributorOffRepositories(Ivo, "He left and asked to be erased."));   // the item, and its one version
+    Assert.Null(Item(ivos).AddedBy);
+  }
+}

@@ -1,0 +1,36 @@
+// What happens in a repository, told as events. Hear one with `[On]`: `[On] void IndexIt(RepositoryItemAdded e) { … }`.
+namespace Osysharp.WorkRepositories;
+
+/// An item was added to an assignment's repository.
+[Event("Repository item added")]
+public sealed class RepositoryItemAdded { public RepositoryItem Item; }
+
+/// A contribution was kept beside the version that stands: somebody has two versions to reconcile.
+[Event("Repository item contested")]
+public sealed class RepositoryItemContested {
+  public RepositoryItem Item;
+  /// The version that was put beside the standing one.
+  public int Version = 0;
+}
+
+/// An item was taken as right by somebody in charge.
+[Event("Repository item accepted")]
+public sealed class RepositoryItemAccepted { public RepositoryItem Item; }
+
+/// An item was taken as wrong by somebody in charge.
+[Event("Repository item rejected")]
+public sealed class RepositoryItemRejected {
+  public RepositoryItem Item;
+  public string Why = "";
+}
+
+/// Two items were recorded as not agreeing.
+[Event("Repository disagreement raised")]
+public sealed class RepositoryDisagreementRaised { public RepositoryDisagreement Disagreement; }
+
+/// An item's content was erased.
+[Event("Repository item erased")]
+public sealed class RepositoryItemErased {
+  public RepositoryItem Item;
+  public string Why = "";
+}

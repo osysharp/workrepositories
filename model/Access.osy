@@ -1,0 +1,222 @@
+// Who reads what of a repository beyond "whoever is on the assignment" — a kind opened to one person, one item opened
+// to somebody outside — and how long things are kept.
+namespace Osysharp.WorkRepositories;
+
+using Osysharp.Identity;
+using Osysharp.Assignments;
+
+/// ⭐ SOMETHING OF A REPOSITORY OPENED TO ONE PERSON: every item of one restricted kind (`Item` is null), or one
+/// item by itself (`Item` is set) — which is how a helper that is not on the assignment is handed exactly the
+/// items its task needs, by reference, and nothing else.
+public entity RepositoryShare {
+  [Required, Immutable, Index] Assignment Assignment;
+  [Immutable] ItemKind Kind = ItemKind.Input;
+  [Immutable, Index] RepositoryItem? Item;
+  [Required, Immutable, Index, Classification(Personal.Identity)] Principal Person;
+  [Classification(Personal.Identity)] Principal? By;
+  [Immutable] DateTime At = DateTime.UtcNow;
+
+  security {
+    // Whoever it was opened to reads their own; whoever is on the assignment reads who else sees what.
+    allow read when IsAuthenticated where Person == user
+      || AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user);
+    allow read when OverseesAssignments || ManagesWorkRepositories;
+    allow create, delete when IsAuthenticated;
+    deny create except via OpenKindTo, OpenItemTo;
+    deny delete except via CloseKindTo, CloseItemTo, TakeContributorOffRepositories;
+    // Who it was opened to never changes; who opened it is taken off with them.
+    allow update when ManagesWorkRepositories;
+    deny update By except via TakeContributorOffRepositories;
+  }
+}
+
+/// Open every item of one kind, on one assignment, to a person on it — the hiring manager reads the interview
+/// feedback; the other interviewers do not. Whoever is in charge of the assignment may.
+[Server, Authorize(IsAuthenticated)]
+public void OpenKindTo(Assignment a, ItemKind kind, Principal person) {
+  RequireInChargeOfRepository(a, "open a kind of item to somebody");
+  if (RepositoryShare.Any(s => s.Assignment == a && s.Item == null && s.Kind == kind && s.Person == person)) { return; }
+  new RepositoryShare { Assignment = a, Kind = kind, Person = person, By = Contributor() };
+  NoteActivity(a, ActivityKind.Note, $"{KindWords(kind)} items were opened to {NameOf(person)}.");
+}
+
+/// Close a kind to a person again.
+[Server, Authorize(IsAuthenticated)]
+public void CloseKindTo(Assignment a, ItemKind kind, Principal person) {
+  RequireInChargeOfRepository(a, "close a kind of item to somebody");
+  foreach (var s in RepositoryShare.Where(s => s.Assignment == a && s.Item == null && s.Kind == kind && s.Person == person).ToList()) { s.Delete(); }
+  NoteActivity(a, ActivityKind.Note, $"{KindWords(kind)} items were closed to {NameOf(person)}.");
+}
+
+/// ⭐ OPEN ONE ITEM to one person — on the assignment or not. They read that item and its versions, and nothing else
+/// of the assignment: a reference with exactly the rights the task needs.
+///
+///     OpenItemTo(photo, Agents.Of<Diagnostician>().Actor);
+[Server, Authorize(IsAuthenticated)]
+public void OpenItemTo(RepositoryItem item, Principal person) {
+  RequireInChargeOfRepository(item.Assignment, "open an item to somebody");
+  if (RepositoryShare.Any(s => s.Item == item && s.Person == person)) { return; }
+  new RepositoryShare { Assignment = item.Assignment, Kind = item.Kind, Item = item, Person = person, By = Contributor() };
+  NoteActivity(item.Assignment, ActivityKind.Note, (item.Restricted ? "A restricted item" : "“" + item.Title + "”") + $" was opened to {NameOf(person)}.");
+}
+
+/// Close an item to a person again: their next read finds nothing.
+[Server, Authorize(IsAuthenticated)]
+public void CloseItemTo(RepositoryItem item, Principal person) {
+  RequireInChargeOfRepository(item.Assignment, "close an item to somebody");
+  foreach (var s in RepositoryShare.Where(s => s.Item == item && s.Person == person).ToList()) { s.Delete(); }
+  NoteActivity(item.Assignment, ActivityKind.Note, (item.Restricted ? "A restricted item" : "“" + item.Title + "”") + $" was closed to {NameOf(person)}.");
+}
+
+/// Make one item restricted, or open it to everybody on the assignment again. Whoever is in charge of the
+/// assignment may.
+[Server, Authorize(IsAuthenticated)]
+public void RestrictItem(RepositoryItem item, bool restricted) {
+  RequireInChargeOfRepository(item.Assignment, "change who sees an item");
+  if (item.Restricted == restricted) { return; }
+  item.Restricted = restricted;
+  foreach (var v in RepositoryItemVersion.Where(v => v.Item == item).ToList()) { v.Restricted = restricted; }
+  // …and a disagreement it is part of is read by whoever may now read both sides.
+  foreach (var d in RepositoryDisagreement.Where(d => d.First == item).ToList()) { d.FirstRestricted = restricted; }
+  foreach (var d in RepositoryDisagreement.Where(d => d.Second == item).ToList()) { d.SecondRestricted = restricted; }
+  NoteActivity(item.Assignment, ActivityKind.Note, restricted ? "An item was restricted." : $"“{item.Title}” is open to everybody on the assignment.");
+}
+
+void RequireInChargeOfRepository(Assignment a, string what) {
+  if (InChargeOf(a)) { return; }
+  throw new NotAuthorized($"Only whoever is in charge of “{a.Title}” may {what}.");
+}
+
+// ── how long things are kept ────────────────────────────────────────────────────────────────────────────────────────
+
+/// The kinds the app keeps for a set time counted from when the assignment closes start counting now.
+[On]
+internal void ACompletedAssignmentStartsItsRetention(AssignmentCompleted e) { StampRetention(e.Assignment, true); }
+[On]
+internal void ACancelledAssignmentStartsItsRetention(AssignmentCancelled e) { StampRetention(e.Assignment, true); }
+[On]
+internal void AFailedAssignmentStartsItsRetention(AssignmentFailed e) { StampRetention(e.Assignment, true); }
+/// …and stop when it is opened again.
+[On]
+internal void AReopenedAssignmentStopsItsRetention(AssignmentReopened e) { StampRetention(e.Assignment, false); }
+
+/// Set, or lift, the date each item of `a` is kept until, for the kinds whose time runs from the assignment's close.
+[Server, Authorize(IsAuthenticated)]
+internal void StampRetention(Assignment a, bool closed) {
+  var now = DateTime.UtcNow;
+  foreach (var item in RepositoryItem.Where(i => i.Assignment == a && i.ErasedAt == null).ToList()) {
+    var rule = RuleFor(item.Kind);
+    if (rule.RetainFor == null || rule.From != RetainFrom.AssignmentClosed) { continue; }
+    item.RetainUntil = closed ? now + rule.RetainFor! : null;
+  }
+}
+
+/// The items that have outlived the time their kind is kept, and are still there.
+public List<RepositoryItem> ExpiredItems() {
+  var now = DateTime.UtcNow;
+  return RepositoryItem.Where(i => i.ErasedAt == null && i.RetainUntil != null && i.RetainUntil < now).OrderBy(i => i.RetainUntil).ToList();
+}
+
+/// ⭐ ERASE AN ITEM: its content, its data and its file are gone from every version; the item and its history stay,
+/// to say that there was one, what kind, who added it and when. Whoever is in charge of the assignment may, and
+/// whoever looks after the repositories (`ManagesWorkRepositories`) — who need not be on the assignment at all.
+///
+/// What a privacy request or a retention sweep calls. A criterion the item met keeps pointing at it.
+[Server, Authorize(IsAuthenticated)]
+public void EraseItem(RepositoryItem item, string why) {
+  // Whoever looks after the repositories erases without being on the assignment — and so without reading it.
+  if (!LooksAfterRepositories()) { RequireInChargeOfRepository(item.Assignment, "erase an item"); }
+  if (item.ErasedAt != null) { return; }
+  if (why.Trim() == "") { throw new ValidationException("Say why it is erased: that much is kept."); }
+  var title = item.Title;
+  // What was written ABOUT it — what changed in each version, why it stands where it does — was also said on the
+  // assignment's activity when it was written: gathered here, to come out of those lines below.
+  List<string> said = [];
+  if (item.StandingWhy.Trim().Length >= 4) { said.Add(item.StandingWhy.Trim()); }
+  foreach (var v in RepositoryItemVersion.Where(v => v.Item == item).ToList()) {
+    if (v.Note.Trim().Length >= 4) { said.Add(v.Note.Trim()); }
+    v.Content = "";
+    v.Data = null;
+    v.File = null;
+    // What changed and where it came from are words about the content, and go with it.
+    v.Note = "";
+    v.From = "";
+  }
+  item.StandingWhy = "";
+  // A disagreement it is part of says something of each side: what it was about, and how it was settled, go too.
+  foreach (var d in RepositoryDisagreement.Where(d => d.First == item || d.Second == item).ToList()) {
+    d.About = "Erased with one of the items.";
+    if (d.ResolvedHow != "") { d.ResolvedHow = "Erased with one of the items."; }
+  }
+  // The assignment's activity named it when it was added, revised or opened to somebody: its title comes out of
+  // those lines — when whoever is erasing may erase from an assignment's activity (the app itself, in a privacy
+  // request or a retention sweep, or a person the app's `ErasesAssignments` admits).
+  if (MayEraseAssignments()) {
+    if (title.Trim().Length >= 2) { EraseWordsFromActivity(item.Assignment, [title], "an item that was erased", why.Trim()); }
+    if (said.Count > 0) { EraseWordsFromActivity(item.Assignment, said, "(erased)", why.Trim()); }
+  }
+  item.Title = KindWords(item.Kind) + " (erased)";
+  item.ErasedAt = DateTime.UtcNow;
+  item.ErasedWhy = Clip(why.Trim(), 300);
+  item.RetainUntil = null;
+  Raise(new RepositoryItemErased { Item = item, Why = item.ErasedWhy });
+}
+
+/// An erasure is on the assignment's record, whoever did it.
+[On, Order(10)]
+internal void AnErasureIsOnTheAssignmentsRecord(RepositoryItemErased e) {
+  NoteActivity(e.Item.Assignment, ActivityKind.Note, $"An item was erased: {e.Why}");
+}
+
+/// Erase everything that has outlived its time, and answer how many items that was. Run it from a schedule of the
+/// app's: `policy ManagesWorkRepositories` says who else may.
+[Server, Authorize(ManagesWorkRepositories)]
+public int EraseExpiredItems() {
+  var expired = ExpiredItems();
+  foreach (var item in expired) { EraseItem(item, "It was kept as long as its kind is."); }
+  return expired.Count;
+}
+
+/// Keep an item until `until` — or, with null, as long as its assignment. What a retention rule kept outside this
+/// package (a privacy kit's, the tenant's own period) calls so that the date an item says it is kept until is the
+/// date it will be erased.
+[Server, Authorize(ManagesWorkRepositories)]
+public void KeepItemUntil(RepositoryItem item, DateTime? until) {
+  if (item.ErasedAt != null) { return; }
+  item.RetainUntil = until;
+}
+
+/// ⭐ TAKE A CONTRIBUTOR OFF THE REPOSITORIES: everything `person` added, wrote, accepted or rejected, raised or
+/// settled stays — the items, their versions, their standing — and is no longer theirs: who added it reads
+/// "Somebody no longer here". What was opened to them is closed. Answers how many items and versions were theirs.
+///
+/// A restricted item they added is from then on read by whoever its kind, or the item, was opened to — and by
+/// whoever looks after the repositories.
+// SECURITY-INVARIANT(a-contributor-is-taken-off-only-by-whoever-looks-after-the-repositories): who added an item, and
+// who wrote a version, is read from who is acting and never changed — except here, where it can only become NOBODY.
+// A restricted item is read by whoever added it, so this also ends their reading of it; it can never hand an item to
+// somebody else. Guarded by tests/erasure.test.osy
+// `only_whoever_looks_after_the_repositories_takes_a_contributor_off_or_moves_a_date` and
+// `a_contributor_taken_off_leaves_what_they_added_and_reads_as_somebody_no_longer_here`.
+[Server, Authorize(ManagesWorkRepositories)]
+public int TakeContributorOffRepositories(Principal person, string why) {
+  if (why.Trim() == "") { throw new ValidationException("Say why they are taken off: that much is kept."); }
+  var theirs = 0;
+  foreach (var item in RepositoryItem.Where(i => i.AddedBy == person || i.StandingBy == person).ToList()) {
+    if (item.AddedBy == person) { item.AddedBy = null; theirs = theirs + 1; }
+    if (item.StandingBy == person) { item.StandingBy = null; }
+  }
+  foreach (var v in RepositoryItemVersion.Where(v => v.By == person || v.ItemAddedBy == person).ToList()) {
+    if (v.By == person) { v.By = null; theirs = theirs + 1; }
+    if (v.ItemAddedBy == person) { v.ItemAddedBy = null; }
+  }
+  foreach (var d in RepositoryDisagreement.Where(d => d.FirstAddedBy == person || d.SecondAddedBy == person || d.RaisedBy == person || d.ResolvedBy == person).ToList()) {
+    if (d.FirstAddedBy == person) { d.FirstAddedBy = null; }
+    if (d.SecondAddedBy == person) { d.SecondAddedBy = null; }
+    if (d.RaisedBy == person) { d.RaisedBy = null; }
+    if (d.ResolvedBy == person) { d.ResolvedBy = null; }
+  }
+  foreach (var share in RepositoryShare.Where(s => s.Person == person).ToList()) { share.Delete(); }
+  foreach (var share in RepositoryShare.Where(s => s.By == person).ToList()) { share.By = null; }
+  return theirs;
+}

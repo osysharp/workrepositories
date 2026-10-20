@@ -1,0 +1,164 @@
+// Osysharp.WorkRepositories — the repository on an assignment's page and one item on a page of its own, driven as a
+// person: what kind of thing each item is and where it stands, who or what added it, a contribution waiting to be
+// reconciled, a disagreement nobody has settled — and what somebody who was not given the feedback does not see.
+// `osy test --pixels` photographs each, wide and on a phone (`Ui.Shot`).
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+using Hiring;
+
+/// A hire part-way through: the role, an application screened by the screener, two interviewers' feedback that does
+/// not agree, panel notes two people changed at once, and a letter.
+Guid AHireInFlight() {
+  TestClock.Set(new DateTime(2026, 3, 2, 10, 0, 0));
+  var hire = OpenTheHire();
+  Guid cv = Guid.Empty;
+  Guid notes = Guid.Empty;
+  runas (Rut) {
+    AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Key = "role", Title = "The role", Content = "Senior implementation consultant, remote, 80–95k.", Source = new ItemSource { From = "Agreed with the hiring manager" } });
+    cv = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Document, Title = "Application: M. Okafor", Content = "Ten years in ERP implementation; led two migrations.", Source = new ItemSource { From = "The careers page" } }).Id;
+    ScreenApplication(Hire(hire), Item(cv));
+    notes = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Key = "panel-notes", Title = "Panel notes", Content = "Okafor: strong on rollouts." }).Id;
+    AddItem(Hire(hire), new NewItem { Kind = ItemKind.Correspondence, Title = "Invitation to interview", Content = "Dear M. Okafor, we would like to meet you on 9 March.", Source = new ItemSource { From = "Sent by mail" } });
+    AcceptItem(Item(cv), "Complete, and she meets the requirements.");
+  }
+  TestClock.Set(new DateTime(2026, 3, 9, 15, 0, 0));
+  Guid ivos = Guid.Empty;
+  runas (Ivo) {
+    ivos = GiveFeedback(Hire(hire), "M. Okafor", "Could not explain a cutover plan. I would not hire.").Id;
+    ReviseItem(Item(notes), new ItemRevision { Content = "Okafor: strong on rollouts. Weak on data migration.", Note = "After my interview" }, basedOn: 1);
+  }
+  runas (Lena) {
+    GiveFeedback(Hire(hire), "M. Okafor", "Walked through a cutover plan in detail. Hire.");
+    ReviseItem(Item(notes), new ItemRevision { Content = "Okafor: strong on rollouts. Led two migrations herself.", Note = "After my interview" }, basedOn: 1);
+  }
+  runas (Rut) {
+    OpenKindTo(Hire(hire), ItemKind.Finding, Hanna);
+    OpenKindTo(Hire(hire), ItemKind.Finding, Rut);
+  }
+  runas (Hanna) {
+    var feedback = ItemsOf(Hire(hire), ItemKind.Finding);
+    NoteDisagreement(feedback[0], feedback[1], "Whether the candidate can plan a cutover");
+  }
+  return hire;
+}
+
+[Test(Office)]
+void the_repository_on_an_assignments_page_says_what_each_item_is_and_where_it_stands() {
+  var hire = AHireInFlight();
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Hanna);
+  Ui.Visit("/hires/" + hire);
+
+  Assert.Visible("Hire: Senior implementation consultant", within: "Assignment");
+  // The repositories kit's panel arrives on the assignment's page by itself.
+  Assert.Visible("7 items", within: "Repository");
+  Assert.Visible("Application: M. Okafor", within: "Repository");
+  Assert.Visible("Accepted", within: "Repository");
+  // The screener's note says an actor wrote it.
+  Assert.Visible("Screener (actor)", within: "Repository");
+  // Two people changed the panel notes at once: one stands, one waits.
+  Assert.Visible("1 to reconcile", within: "Repository");
+  // The interviewers do not agree, and nobody has settled it.
+  Assert.Visible("Not settled: Whether the candidate can plan a cutover", within: "Repository");
+  Assert.Visible("Restricted", within: "Repository");
+  Ui.Shot("repository-on-assignment-wide");
+
+  Ui.Viewport(390, 844);
+  Ui.Visit("/hires/" + hire);
+  Assert.Visible("7 items", within: "Repository");
+  Assert.NoOverflow();
+  Ui.Shot("repository-on-assignment-phone");
+}
+
+[Test(Office)]
+void an_items_page_shows_every_version_who_wrote_it_and_what_waits_to_be_reconciled() {
+  var hire = AHireInFlight();
+  Guid notes = Guid.Empty;
+  Guid screening = Guid.Empty;
+  runas (Rut) {
+    notes = ItemOf(Hire(hire), "panel-notes")!.Id;
+    screening = ItemsOf(Hire(hire), ItemKind.Extracted).Single().Id;
+  }
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Rut);
+  Ui.Visit("/items/" + notes);
+
+  Assert.Visible("Panel notes", within: "Item");
+  Assert.Visible("3 versions, none overwritten", within: "Versions");
+  // Ivo's version stands; Lena's waits beside it; the first is still there.
+  Assert.Visible("Okafor: strong on rollouts. Weak on data migration.", within: "Version 2");
+  Assert.Visible("Stands", within: "Version 2");
+  Assert.Visible("Okafor: strong on rollouts. Led two migrations herself.", within: "Version 3");
+  Assert.Visible("Waits to be reconciled", within: "Version 3");
+  Assert.Visible("Written from version 1", within: "Version 3");
+  Assert.Visible("Okafor: strong on rollouts.", within: "Version 1");
+  Ui.Shot("item-versions-wide");
+
+  Ui.Viewport(390, 844);
+  Ui.Visit("/items/" + notes);
+  Assert.Visible("Waits to be reconciled", within: "Version 3");
+  Assert.NoOverflow();
+  Ui.Shot("item-versions-phone");
+
+  // Where a version came from: the screener's note names what it read, with which tool, on which model.
+  Ui.Viewport(1440, 900);
+  Ui.Visit("/items/" + screening);
+  Assert.Visible("Screener (actor)", within: "Item");
+  Assert.Visible("From the application itself · agent Screener · tool ReadApplication · model scripted-small", within: "Version 1");
+  Ui.Shot("item-provenance-wide");
+
+  // Somebody who works on the hire says which version stands — and says how it was settled.
+  Ui.Visit("/items/" + notes);
+  Ui.Click("Let this one stand…", within: "Version 3");
+  Ui.Fill("How it was settled", "Lena had the later information.");
+  Ui.Click("Let it stand");
+  Assert.Visible("Stands", within: "Version 3");
+  Assert.Hidden("Waits to be reconciled");
+  Assert.Hidden("1 to reconcile");
+  runas (Rut) {
+    Assert.Equal(3, Item(notes).Current);
+    Assert.Equal(0, Item(notes).Unreconciled);
+    Assert.Equal(3, VersionsOf(Item(notes)).Count);
+  }
+}
+
+[Test(Office)]
+void whoever_is_in_charge_accepts_or_rejects_an_item_from_its_page() {
+  var hire = AHireInFlight();
+  Guid role = Guid.Empty;
+  runas (Rut) { role = ItemOf(Hire(hire), "role")!.Id; }
+  // An interviewer reads the role and is offered nothing to decide.
+  Ui.SignInAs(Ivo);
+  Ui.Visit("/items/" + role);
+  Assert.Visible("Unverified", within: "Item");
+  Assert.Hidden("Accept");
+  Assert.Hidden("Reject…");
+
+  Ui.SignInAs(Hanna);
+  Ui.Visit("/items/" + role);
+  Ui.Click("Accept");
+  Assert.Visible("Accepted", within: "Item");
+  runas (Rut) { Assert.Equal(ItemStanding.Accepted, Item(role).Standing); }
+  Ui.Click("Reject…");
+  Ui.Fill("Why", "The range was never agreed.");
+  Ui.Click("Reject");
+  Assert.Visible("Rejected", within: "Item");
+  Assert.Visible("The range was never agreed.", within: "Standing");
+  runas (Rut) { Assert.Equal(ItemStanding.Rejected, Item(role).Standing); }
+}
+
+[Test(Office)]
+void feedback_that_was_not_opened_to_somebody_is_not_on_their_screen() {
+  var hire = AHireInFlight();
+  Guid lenas = Guid.Empty;
+  runas (Lena) { lenas = ItemsOf(Hire(hire), ItemKind.Finding).Single().Id; }
+  // Ivo is on the hire. He sees his own feedback in the repository, and not Lena's — nor the disagreement about it.
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Ivo);
+  Ui.Visit("/hires/" + hire);
+  Assert.Visible("6 items", within: "Repository");
+  Ui.Visit("/items/" + lenas);
+  Assert.Visible("No such item");
+  Assert.Hidden("Walked through a cutover plan");
+}

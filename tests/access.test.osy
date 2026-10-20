@@ -1,0 +1,239 @@
+// Osysharp.WorkRepositories — who reads what: everybody on the assignment reads what is not restricted; a restricted
+// kind is read by whoever added the item and whoever the kind was opened to; one item can be opened to somebody who
+// is not on the assignment at all; each kind is kept as long as the app says; and nothing is written past the kit.
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+using Hiring;
+
+[Test(Office)]
+void a_repository_is_read_by_whoever_is_on_the_assignment_and_by_nobody_else() {
+  var hire = OpenTheHire();
+  runas (Rut) { AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "The role", Content = "Senior consultant." }); }
+  runas (Ivo) {
+    Assert.Equal(1, ItemsOf(Hire(hire)).Count);
+    Assert.Equal("Senior consultant.", CurrentOf(ItemsOf(Hire(hire))[0]).Content);
+  }
+  // Pia interviews for other hires. She is not on this one: nothing of its repository is hers to read.
+  runas (Pia) {
+    Assert.Equal(0, RepositoryItem.Count());
+    Assert.Equal(0, RepositoryItemVersion.Count());
+    Assert.Equal(0, Assignment.Count());
+  }
+}
+
+[Test(Office)]
+void a_restricted_kind_is_read_by_whoever_added_it_and_whoever_it_was_opened_to() {
+  var hire = OpenTheHire();
+  Guid ivos = Guid.Empty;
+  Guid lenas = Guid.Empty;
+  runas (Ivo) { ivos = GiveFeedback(Hire(hire), "M. Okafor", "Strong. Hire.").Id; }
+  runas (Lena) { lenas = GiveFeedback(Hire(hire), "M. Okafor", "Not convinced on migration.").Id; }
+
+  // Each interviewer reads their own feedback and not the other's — so neither is steered by it.
+  runas (Ivo) {
+    Assert.True(Item(ivos).Restricted);
+    Assert.Equal([ivos], ItemsOf(Hire(hire), ItemKind.Finding).Select(i => i.Id).ToList());
+    Assert.Equal(1, RepositoryItemVersion.Count(v => v.Kind == ItemKind.Finding));
+    Assert.Equal("Strong. Hire.", CurrentOf(Item(ivos)).Content);
+  }
+  runas (Lena) { Assert.Equal([lenas], ItemsOf(Hire(hire), ItemKind.Finding).Select(i => i.Id).ToList()); }
+  // The hiring manager is on the hire, and has not been given the feedback yet.
+  runas (Hanna) {
+    Assert.Equal(0, ItemsOf(Hire(hire), ItemKind.Finding).Count);
+    // What the hire's activity says about it gives nothing away.
+    Assert.Equal(2, ActivityOf(Hire(hire)).Count(l => l.Said == "Finding added (restricted)."));
+    Assert.False(ActivityOf(Hire(hire)).Any(l => l.Said.Contains("Okafor")));
+  }
+  // The recruiter owns the hire, and opens the feedback to the hiring manager — and only to her.
+  runas (Ivo) { Assert.Throws<NotAuthorized>(() => OpenKindTo(Hire(hire), ItemKind.Finding, Ivo)); }
+  runas (Rut) { OpenKindTo(Hire(hire), ItemKind.Finding, Hanna); }
+  runas (Hanna) {
+    Assert.Equal(2, ItemsOf(Hire(hire), ItemKind.Finding).Count);
+    Assert.Equal(2, RepositoryItemVersion.Count(v => v.Kind == ItemKind.Finding));
+  }
+  runas (Lena) { Assert.Equal(1, ItemsOf(Hire(hire), ItemKind.Finding).Count); }
+  // Closed again, her next read finds none.
+  runas (Rut) { CloseKindTo(Hire(hire), ItemKind.Finding, Hanna); }
+  runas (Hanna) { Assert.Equal(0, ItemsOf(Hire(hire), ItemKind.Finding).Count); }
+  // The records officer looks after all of it, restricted or not.
+  runas (Otto) { Assert.Equal(2, RepositoryItem.Count(i => i.Kind == ItemKind.Finding)); }
+}
+
+[Test(Office)]
+void one_item_is_opened_to_somebody_who_is_not_on_the_assignment_and_nothing_else_is() {
+  var hire = OpenTheHire();
+  Guid cv = Guid.Empty;
+  runas (Rut) {
+    cv = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Document, Title = "Application: M. Okafor", Content = "Ten years…" }).Id;
+    AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "Salary range", Content = "80–95k." });
+    // Pia is asked for a second opinion on the application. She gets the application — by reference, not a copy.
+    OpenItemTo(Item(cv), Pia);
+  }
+  runas (Pia) {
+    Assert.Equal([cv], RepositoryItem.ToList().Select(i => i.Id).ToList());
+    Assert.Equal("Ten years…", CurrentOf(Item(cv)).Content);
+    // Not the hire, not its other items, not its activity.
+    Assert.Equal(0, Assignment.Count());
+    Assert.Equal(0, AssignmentActivity.Count());
+    Assert.Equal(1, RepositoryItemVersion.Count());
+  }
+  runas (Rut) {
+    // A later version of the same item is hers to read too: she holds a reference, not a snapshot.
+    ReviseItem(Item(cv), new ItemRevision { Content = "Ten years… and a certificate.", Note = "Certificate attached" }, basedOn: 1);
+  }
+  runas (Pia) { Assert.Equal("Ten years… and a certificate.", CurrentOf(Item(cv)).Content); }
+  runas (Rut) { CloseItemTo(Item(cv), Pia); }
+  runas (Pia) {
+    Assert.Equal(0, RepositoryItem.Count());
+    Assert.Equal(0, RepositoryItemVersion.Count());
+  }
+}
+
+[Test(Office)]
+void whoever_is_taken_off_the_assignment_reads_and_adds_nothing_more() {
+  var hire = OpenTheHire();
+  Guid role = Guid.Empty;
+  runas (Rut) { role = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "The role", Content = "Senior consultant." }).Id; }
+  runas (Ivo) { ReviseItem(Item(role), new ItemRevision { Content = "Senior consultant, remote." }, basedOn: 1); }
+  runas (Rut) { RemoveParticipant(Hire(hire), Ivo); }
+  runas (Ivo) {
+    Assert.Equal(0, RepositoryItem.Count());
+    Assert.Equal(0, RepositoryItemVersion.Count());
+  }
+  // What he wrote while he was on it stays, under his name.
+  runas (Rut) {
+    Assert.Equal(2, Item(role).Latest);
+    Assert.Equal(Ivo.Id, CurrentOf(Item(role)).By!.Id);
+  }
+}
+
+[Test(Office)]
+void an_observer_reads_the_repository_and_adds_nothing() {
+  var hire = OpenTheHire();
+  Guid role = Guid.Empty;
+  Guid range = Guid.Empty;
+  runas (Rut) {
+    role = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "The role", Content = "Senior consultant." }).Id;
+    range = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "Salary range", Content = "80–95k." }).Id;
+    AddParticipant(Hire(hire), Pia, ParticipantRole.Observer);
+  }
+  runas (Pia) {
+    Assert.Equal("Senior consultant.", CurrentOf(Item(role)).Content);
+    Assert.Denied(() => AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "My two cents", Content = "Hire my friend." }));
+    Assert.Denied(() => ReviseItem(Item(role), new ItemRevision { Content = "Junior consultant." }, basedOn: 1));
+    Assert.Denied(() => NoteDisagreement(Item(role), Item(range), "They cannot both be right."));
+  }
+  runas (Rut) {
+    Assert.Equal(2, ItemsOf(Hire(hire)).Count);
+    Assert.Equal(1, Item(role).Latest);
+    Assert.Equal(0, OpenDisagreements(Hire(hire)).Count);
+  }
+}
+
+[Test(Office)]
+void nothing_of_a_repository_is_written_except_by_the_kit() {
+  var hire = OpenTheHire();
+  Guid ivos = Guid.Empty;
+  runas (Ivo) { ivos = GiveFeedback(Hire(hire), "M. Okafor", "Strong. Hire.").Id; }
+  runas (Ivo) {
+    // His own feedback, which he may change the proper way — by a new version. Not like this.
+    Assert.Denied(() => RewriteVersion(CurrentOf(Item(ivos))));
+    Assert.Denied(() => ForceAccepted(Item(ivos)));
+    Assert.Denied(() => Unrestrict(Item(ivos)));
+    Assert.Denied(() => ForgeItem(Hire(hire)));
+    Assert.Denied(() => ForgeVersion(Item(ivos)));
+  }
+  runas (Lena) { Assert.Denied(() => OpenToMyself(Hire(hire), Lena)); }
+  runas (Ivo) {
+    Assert.Equal("Strong. Hire.", CurrentOf(Item(ivos)).Content);
+    Assert.Equal(ItemStanding.Unverified, Item(ivos).Standing);
+    Assert.True(Item(ivos).Restricted);
+    Assert.Equal(1, Item(ivos).Latest);
+  }
+  runas (Lena) { Assert.Equal(0, ItemsOf(Hire(hire), ItemKind.Finding).Count); }
+  runas (Otto) { Assert.Equal(0, RepositoryItem.Count(i => i.Key == "forged")); }
+}
+
+// ── how long things are kept ────────────────────────────────────────────────────────────────────────────────────────
+
+[Test(Office)]
+void each_kind_is_kept_as_long_as_the_app_says() {
+  TestClock.Set(new DateTime(2026, 3, 2, 10, 0, 0));
+  var hire = OpenTheHire();
+  Guid cv = Guid.Empty;
+  Guid letter = Guid.Empty;
+  Guid role = Guid.Empty;
+  runas (Rut) {
+    cv = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Document, Title = "Application: M. Okafor", Content = "Ten years…" }).Id;
+    letter = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Correspondence, Title = "Invitation to interview", Content = "Dear M. Okafor…" }).Id;
+    role = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "The role", Content = "Senior consultant." }).Id;
+    // A letter's thirty days run from the day it is written; an application's six months have not started; the
+    // role is kept as long as the hire is.
+    Assert.Equal(new DateTime(2026, 4, 1, 10, 0, 0), Item(letter).RetainUntil);
+    Assert.Null(Item(cv).RetainUntil);
+    Assert.Null(Item(role).RetainUntil);
+  }
+
+  // The hire closes on 1 April: the applications' clock starts.
+  TestClock.Set(new DateTime(2026, 4, 1, 12, 0, 0));
+  runas (Rut) {
+    var a = Hire(hire);
+    foreach (var c in a.Criteria.ToList()) { MeetCriterion(c, "Done"); }
+    CompleteAssignment(a, "M. Okafor starts on 1 May.");
+  }
+  Background.Settle();
+  runas (Rut) {
+    Assert.Equal(new DateTime(2026, 9, 28, 12, 0, 0), Item(cv).RetainUntil);
+    Assert.Null(Item(role).RetainUntil);
+  }
+  // The letter has outlived its thirty days; the application has not.
+  runas (Otto) {
+    Assert.Equal([letter], ExpiredItems().Select(i => i.Id).ToList());
+    Assert.Equal(1, EraseExpiredItems());
+    Assert.Equal(0, ExpiredItems().Count);
+  }
+  Background.Settle();
+  runas (Rut) {
+    // It is on the hire's record, though the records officer is not on the hire.
+    Assert.Equal("An item was erased: It was kept as long as its kind is.", ActivityOf(Hire(hire))[0].Said);
+    var erased = Item(letter);
+    Assert.NotNull(erased.ErasedAt);
+    Assert.Equal("Correspondence (erased)", erased.Title);
+    Assert.Equal("It was kept as long as its kind is.", erased.ErasedWhy);
+    // The item is still there to say there was one; what it said is gone from every version.
+    Assert.Equal("", CurrentOf(erased).Content);
+    Assert.Equal(Rut.Id, erased.AddedBy!.Id);
+    Assert.Equal("Ten years…", CurrentOf(Item(cv)).Content);
+    Assert.Throws<RepositoryRefused>(() => ReviseItem(erased, new ItemRevision { Content = "Dear M. Okafor…" }, basedOn: 1));
+  }
+  // Only the records officer runs the sweep.
+  runas (Rut) { Assert.Denied(() => EraseExpiredItems()); }
+
+  // Six months and a day later the application goes too.
+  TestClock.Set(new DateTime(2026, 9, 29, 12, 0, 0));
+  runas (Otto) {
+    Assert.Equal(1, EraseExpiredItems());
+    Assert.Equal("", CurrentOf(Item(cv)).Content);
+    Assert.Equal("Senior consultant.", CurrentOf(Item(role)).Content);
+  }
+}
+
+[Test(Office)]
+void reopening_the_assignment_stops_the_clock() {
+  TestClock.Set(new DateTime(2026, 3, 2, 10, 0, 0));
+  var hire = OpenTheHire();
+  Guid cv = Guid.Empty;
+  runas (Rut) {
+    cv = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Document, Title = "Application: M. Okafor", Content = "Ten years…" }).Id;
+    var a = Hire(hire);
+    foreach (var c in a.Criteria.ToList()) { MeetCriterion(c, "Done"); }
+    CompleteAssignment(a, "M. Okafor accepted.");
+  }
+  Background.Settle();
+  runas (Rut) { Assert.NotNull(Item(cv).RetainUntil); }
+  // She withdraws; the hire is opened again, and the applications are needed again.
+  runas (Hanna) { ReopenAssignment(Hire(hire), "The candidate withdrew."); }
+  Background.Settle();
+  runas (Rut) { Assert.Null(Item(cv).RetainUntil); }
+}

@@ -1,0 +1,48 @@
+// The company's screens — a hire's page (the assignment, with its repository under it) and one item's page. The pages
+// are the app's; what is on them is the kits'. (ui.test.osy drives them; `osy test --pixels` photographs them.)
+namespace Hiring;
+
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+
+/// The company's front door: the hires, each a way into its page.
+[Title("Hires")]
+[Route("/")]
+[Authorize]
+[Render(CSR)]
+component HiresPage() {
+  live var hires = Assignment.OrderBy(a => a.Title).Take(50).ToList();
+  render {
+    Stack(gap: 3, p: 5, w: "100%", maxW: "760px", mx: "auto", label: "Hires") {
+      Text("Hires", fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold);
+      if (hires.Count == 0) { EmptyState("No hires yet", body: "A hire that is opened shows here."); }
+      foreach (var hire in hires) { TextLink(hire.Title, to: "/hires/" + hire.Id.ToString()); }
+    }
+  }
+}
+
+/// One hire: the assignment, and under it — contributed by the repositories kit — what it knows.
+[Title("Hire")]
+[Route("/hires/{id}")]
+[Authorize]
+[Render(CSR)]
+component HirePage(Guid id) {
+  render {
+    Stack(p: 5, w: "100%", maxW: "1080px", mx: "auto") {
+      AssignmentView(id, open: other => "/hires/" + other);
+    }
+  }
+}
+
+/// One item of a hire's repository.
+[Title("Item")]
+[Route("/items/{id}")]
+[Authorize]
+[Render(CSR)]
+component ItemPage(Guid id) {
+  render {
+    Stack(p: 5, w: "100%", maxW: "760px", mx: "auto") {
+      RepositoryItemView(id);
+    }
+  }
+}

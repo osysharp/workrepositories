@@ -1,0 +1,269 @@
+// Osysharp.WorkRepositories — what an assignment knows, kept as items: each version says who or what wrote it and
+// from where; a change is a version more; two contributors who started from the same version both stay.
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+using Hiring;
+
+[Test(Office)]
+void an_item_says_what_it_is_who_added_it_when_and_from_where() {
+  TestClock.Set(new DateTime(2026, 3, 2, 10, 0, 0));
+  var hire = OpenTheHire();
+  runas (Rut) {
+    var cv = AddItem(Hire(hire), new NewItem {
+      Kind = ItemKind.Document, Title = "Application: M. Okafor", Content = "Ten years in ERP implementation…", ContentType = "text/markdown",
+      Source = new ItemSource { From = "The careers page", RefType = "WebForm" },
+    });
+
+    var item = Item(cv.Id);
+    Assert.Equal(ItemKind.Document, item.Kind);
+    Assert.Equal(ItemStanding.Unverified, item.Standing);
+    Assert.Equal(Rut.Id, item.AddedBy!.Id);
+    Assert.Equal(ContributorKind.Person, item.AddedAs);
+    Assert.Equal(new DateTime(2026, 3, 2, 10, 0, 0), item.AddedAt);
+    Assert.Equal(1, item.Latest);
+    Assert.Equal(1, item.Current);
+    var v = CurrentOf(item);
+    Assert.Equal(1, v.Number);
+    Assert.Equal("Ten years in ERP implementation…", v.Content);
+    Assert.Equal("text/markdown", v.ContentType);
+    Assert.Equal("The careers page", v.From);
+    Assert.Equal(Rut.Id, v.By!.Id);
+    Assert.Null(v.BasedOn);
+    // A document handed in is something the hire now knows: progress, pointing at the item.
+    var line = Hire(hire).Activity.OrderByDescending(l => l.Seq).First();
+    Assert.Equal("Document added: Application: M. Okafor", line.Said);
+    Assert.True(line.Progress);
+    Assert.Equal(item.Id, line.Reference);
+    Assert.Equal("RepositoryItem", line.ReferenceType);
+  }
+}
+
+[Test(Office)]
+void what_an_actor_and_the_app_itself_add_says_so() {
+  var hire = OpenTheHire();
+  Guid cv = Guid.Empty;
+  Guid note = Guid.Empty;
+  runas (Rut) {
+    cv = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Document, Title = "Application: M. Okafor", Content = "Ten years…" }).Id;
+    note = ScreenApplication(Hire(hire), Item(cv));
+  }
+  runas (Rut) {
+    // The screener's note is the screener's: an actor's, with what it read, which model did the work and with which tool.
+    var written = Item(note);
+    Assert.Equal(ContributorKind.Actor, written.AddedAs);
+    Assert.Equal(Actor.Of<Screener>().Id, written.AddedBy!.Id);
+    var v = CurrentOf(written);
+    Assert.Equal(ContributorKind.Actor, v.AddedAs);
+    Assert.Equal("The application itself", v.From);
+    Assert.Equal(cv, v.SourceRef);
+    Assert.Equal("RepositoryItem", v.SourceType);
+    Assert.Equal("Hiring.Screener", v.Agent);
+    Assert.Equal("scripted-small", v.Model);
+    Assert.Equal("ReadApplication", v.Tool);
+    Assert.Contains("\"rollouts\":2", $"{v.Data}");
+
+    // The hire completes; the app files the outcome itself — and that item says nobody added it.
+    var a = Hire(hire);
+    MeetCriterion(a.Criteria.Single(c => c.Position == 1), "Agreed with Hanna");
+    MeetCriterion(a.Criteria.Single(c => c.Position == 2), "Ivo and Lena both wrote theirs");
+    MeetCriterion(a.Criteria.Single(c => c.Position == 3), "Offer accepted");
+    CompleteAssignment(a, "M. Okafor starts on 1 May.");
+  }
+  Background.Settle();
+  runas (Rut) {
+    var outcome = ItemOf(Hire(hire), "outcome")!;
+    Assert.Equal(ContributorKind.System, outcome.AddedAs);
+    Assert.Null(outcome.AddedBy);
+    Assert.Equal(ItemKind.Deliverable, outcome.Kind);
+    Assert.Equal("M. Okafor starts on 1 May.", CurrentOf(outcome).Content);
+  }
+}
+
+[Test(Office)]
+void changing_an_item_adds_a_version_and_overwrites_nothing() {
+  var hire = OpenTheHire();
+  runas (Rut) {
+    var role = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Key = "role", Title = "The role", Content = "Senior consultant, Stockholm." });
+    ReviseItem(Item(role.Id), new ItemRevision { Content = "Senior consultant, Stockholm or remote.", Note = "Remote is fine" }, basedOn: 1);
+    ReviseItem(Item(role.Id), new ItemRevision { Content = "Senior consultant, remote, 80–95k.", Note = "Salary range added" }, basedOn: 2);
+
+    var item = Item(role.Id);
+    Assert.Equal(3, item.Latest);
+    Assert.Equal(3, item.Current);
+    Assert.Equal(0, item.Unreconciled);
+    Assert.Equal("Senior consultant, remote, 80–95k.", CurrentOf(item).Content);
+    // Every version is still there, as it was written.
+    Assert.Equal(["Senior consultant, Stockholm.", "Senior consultant, Stockholm or remote.", "Senior consultant, remote, 80–95k."],
+                 VersionsOf(item).Select(v => v.Content).ToList());
+    Assert.Equal(["", "Remote is fine", "Salary range added"], VersionsOf(item).Select(v => v.Note).ToList());
+    Assert.Equal(2, VersionsOf(item)[2].BasedOn);
+    // A change must say which version it was made from.
+    Assert.Throws<ValidationException>(() => ReviseItem(Item(role.Id), new ItemRevision { Content = "?" }, basedOn: 9));
+    // An item added again under its key is the same item, unchanged.
+    var again = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Key = "role", Title = "The role, again", Content = "Something else." });
+    Assert.Equal(item.Id, again.Id);
+    Assert.Equal(3, Item(role.Id).Latest);
+    Assert.Equal(1, ItemsOf(Hire(hire), ItemKind.Input).Count);
+  }
+}
+
+[Test(Office)]
+void two_contributors_update_one_repository_item_and_neither_is_lost() {
+  var hire = OpenTheHire();
+  Guid notes = Guid.Empty;
+  runas (Rut) {
+    notes = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Key = "panel-notes", Title = "Panel notes", Content = "Okafor: strong on rollouts." }).Id;
+  }
+  // Ivo and Lena both open version 1, and both write.
+  runas (Ivo) {
+    ReviseItem(Item(notes), new ItemRevision { Content = "Okafor: strong on rollouts. Weak on data migration.", Note = "Ivo's addition" }, basedOn: 1);
+  }
+  runas (Lena) {
+    ReviseItem(Item(notes), new ItemRevision { Content = "Okafor: strong on rollouts. Led two migrations herself.", Note = "Lena's addition" }, basedOn: 1);
+  }
+
+  runas (Rut) {
+    var item = Item(notes);
+    // Ivo's stands — it was the first to arrive — and Lena's is kept beside it. Nothing was overwritten.
+    Assert.Equal(3, item.Latest);
+    Assert.Equal(2, item.Current);
+    Assert.Equal(1, item.Unreconciled);
+    Assert.Equal("Okafor: strong on rollouts. Weak on data migration.", CurrentOf(item).Content);
+    var versions = VersionsOf(item);
+    Assert.Equal(3, versions.Count);
+    Assert.Equal(Ivo.Id, versions[1].By!.Id);
+    Assert.False(versions[1].Unreconciled);
+    Assert.Equal(Lena.Id, versions[2].By!.Id);
+    Assert.True(versions[2].Unreconciled);
+    Assert.Equal("Okafor: strong on rollouts. Led two migrations herself.", versions[2].Content);
+    Assert.Equal(1, versions[2].BasedOn);
+    Assert.Contains("“Panel notes” has a contribution to reconcile: version 3 was written from version 1, and version 2 stands.",
+                    ActivityOf(Hire(hire)).Select(l => l.Said).ToList());
+
+    // Somebody reconciles: one version that takes from both. All four versions are in the item's history.
+    Assert.Throws<ValidationException>(() => ReconcileItem(Item(notes), keep: 2, why: ""));
+    ReconcileItem(Item(notes), keep: 2, why: "Both are right: she led them, and the second went badly.",
+      merged: new ItemRevision { Content = "Okafor: strong on rollouts. Led two migrations; the second overran." });
+
+    var settled = Item(notes);
+    Assert.Equal(4, settled.Latest);
+    Assert.Equal(4, settled.Current);
+    Assert.Equal(0, settled.Unreconciled);
+    Assert.Equal("Okafor: strong on rollouts. Led two migrations; the second overran.", CurrentOf(settled).Content);
+    Assert.Equal(4, VersionsOf(settled).Count);
+    Assert.True(VersionsOf(settled).All(v => !v.Unreconciled));
+    Assert.Equal("Okafor: strong on rollouts. Led two migrations herself.", VersionsOf(settled)[2].Content);
+  }
+}
+
+[Test(Office)]
+void a_contribution_kept_beside_can_be_the_one_chosen_to_stand() {
+  var hire = OpenTheHire();
+  Guid notes = Guid.Empty;
+  runas (Rut) { notes = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "Panel notes", Content = "First." }).Id; }
+  runas (Ivo) { ReviseItem(Item(notes), new ItemRevision { Content = "Ivo's." }, basedOn: 1); }
+  runas (Lena) { ReviseItem(Item(notes), new ItemRevision { Content = "Lena's." }, basedOn: 1); }
+  runas (Rut) {
+    ReconcileItem(Item(notes), keep: 3, why: "Lena had the later information.");
+    Assert.Equal(3, Item(notes).Current);
+    Assert.Equal(3, Item(notes).Latest);
+    Assert.Equal(0, Item(notes).Unreconciled);
+    Assert.Equal("Lena's.", CurrentOf(Item(notes)).Content);
+    Assert.Equal("Ivo's.", VersionsOf(Item(notes))[1].Content);
+  }
+}
+
+// ── where an item stands ────────────────────────────────────────────────────────────────────────────────────────────
+
+[Test(Office)]
+void an_item_is_unverified_until_somebody_in_charge_says_otherwise() {
+  var hire = OpenTheHire();
+  Guid reference = Guid.Empty;
+  runas (Ivo) {
+    reference = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Evidence, Title = "Reference from a former employer", Content = "Reliable, careful." }).Id;
+    Assert.Equal(ItemStanding.Unverified, Item(reference).Standing);
+    // An interviewer adds to the hire; deciding what is taken as right is not his.
+    Assert.Throws<NotAuthorized>(() => AcceptItem(Item(reference), "Looks fine."));
+    Assert.Throws<NotAuthorized>(() => RejectItem(Item(reference), "Looks forged."));
+  }
+  runas (Rut) {
+    AcceptItem(Item(reference), "Called the employer; confirmed.");
+    var item = Item(reference);
+    Assert.Equal(ItemStanding.Accepted, item.Standing);
+    Assert.Equal("Called the employer; confirmed.", item.StandingWhy);
+    Assert.Equal(Rut.Id, item.StandingBy!.Id);
+    // It meets a criterion, which then points at it.
+    var a = Hire(hire);
+    MeetWith(a.Criteria.Single(c => c.Position == 1), item, "The reference confirms the profile we agreed");
+    var met = Hire(hire).Criteria.Single(c => c.Position == 1);
+    Assert.Equal(item.Id, met.Evidence);
+    Assert.Equal("RepositoryItem", met.EvidenceType);
+  }
+  runas (Hanna) {
+    Assert.Throws<ValidationException>(() => RejectItem(Item(reference), ""));
+    RejectItem(Item(reference), "The employer does not exist.");
+    Assert.Equal(ItemStanding.Rejected, Item(reference).Standing);
+    // Rejected, it is kept — and meets nothing.
+    var a = Hire(hire);
+    var refused = Assert.Throws<RepositoryRefused>(() => MeetWith(a.Criteria.Single(c => c.Position == 2), Item(reference), "The reference"));
+    Assert.Equal("“Reference from a former employer” is rejected, and meets nothing.", refused.Message);
+    Assert.Equal("Reliable, careful.", CurrentOf(Item(reference)).Content);
+  }
+}
+
+[Test(Office)]
+void a_disagreement_stays_open_until_a_decision_settles_it() {
+  var hire = OpenTheHire();
+  Guid ivos = Guid.Empty;
+  Guid lenas = Guid.Empty;
+  runas (Ivo) { ivos = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Evidence, Title = "Ivo's interview notes", Content = "Could not explain a cutover plan." }).Id; }
+  runas (Lena) {
+    lenas = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Evidence, Title = "Lena's interview notes", Content = "Walked through a cutover plan in detail." }).Id;
+    NoteDisagreement(Item(ivos), Item(lenas), "Whether the candidate can plan a cutover");
+    // Recorded once, whichever way round it is said.
+    NoteDisagreement(Item(lenas), Item(ivos), "Whether the candidate can plan a cutover");
+  }
+  runas (Rut) {
+    var open = OpenDisagreements(Hire(hire));
+    Assert.Equal(1, open.Count);
+    Assert.Equal("Whether the candidate can plan a cutover", open[0].About);
+    Assert.Equal(Lena.Id, open[0].RaisedBy!.Id);
+    // Both sides are still there, and neither has been taken as right.
+    Assert.Equal(ItemStanding.Unverified, Item(ivos).Standing);
+    Assert.Equal(ItemStanding.Unverified, Item(lenas).Standing);
+  }
+  runas (Lena) {
+    // An interviewer does not settle it — and it is not settled by anything but a decision.
+    var decision = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Decision, Title = "Third interview", Content = "A third interview on cutover planning." });
+    Assert.Throws<NotAuthorized>(() => ResolveDisagreement(OpenDisagreements(Hire(hire))[0], decision, "I was right."));
+  }
+  runas (Hanna) {
+    var d = OpenDisagreements(Hire(hire))[0];
+    Assert.Throws<ValidationException>(() => ResolveDisagreement(d, Item(ivos), "Ivo's notes win."));
+    var decision = ItemsOf(Hire(hire), ItemKind.Decision).Single();
+    ResolveDisagreement(d, decision, "A third interview will settle the cutover question.");
+
+    Assert.Equal(0, OpenDisagreements(Hire(hire)).Count);
+    var settled = RepositoryDisagreement.Single();
+    Assert.Equal(decision.Id, settled.Resolution!.Id);
+    Assert.Equal(Hanna.Id, settled.ResolvedBy!.Id);
+    Assert.Equal(ItemStanding.Accepted, Item(decision.Id).Standing);
+    Assert.Equal("A disagreement was settled: A third interview will settle the cutover question.", ActivityOf(Hire(hire))[0].Said);
+    Assert.True(ActivityOf(Hire(hire))[0].Progress);
+  }
+}
+
+[Test(Office)]
+void a_superseded_item_names_what_took_its_place() {
+  var hire = OpenTheHire();
+  runas (Rut) {
+    var first = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Proposal, Title = "Offer, first draft", Content = "85k." });
+    var second = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Proposal, Title = "Offer, second draft", Content = "90k and a signing bonus." });
+    SupersedeItem(Item(first.Id), Item(second.Id), "The candidate countered.");
+    Assert.Equal(ItemStanding.Superseded, Item(first.Id).Standing);
+    Assert.Equal(second.Id, Item(first.Id).SupersededBy!.Id);
+    // A proposal is not progress: nothing has been decided.
+    Assert.False(Hire(hire).Activity.Any(l => l.Progress && l.Said.StartsWith("Proposal added")));
+  }
+}

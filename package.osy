@@ -1,0 +1,41 @@
+// Osysharp.WorkRepositories — what an assignment knows, kept as items: the evidence, the correspondence, the findings,
+// the documents and the decisions, each with who or what added it, when, and from where.
+//
+//     var scan = AddItem(a, new NewItem {
+//       Kind = ItemKind.Evidence, Title = "Carrier scan, 12 March",
+//       Content = "Parcel 7731 scanned at the Malmö depot at 06:12.",
+//       Source = new ItemSource { From = "The carrier's tracking page", Tool = "TrackParcel" },
+//     });
+//     ReviseItem(scan, "…scanned again at 14:40, out for delivery.", basedOn: 1, note: "A second scan");
+//     MeetWith(CriterionOf(a, "delivered-or-refunded"), scan, "The carrier's scan shows it delivered");
+//
+// ⚑ AN ITEM IS NEVER OVERWRITTEN. Changing one adds a version, and the version says who or what wrote it — a person,
+//   an agent's own account, or the app itself — and what it was read from. Two contributors who both started from the
+//   same version both stay: the second is kept beside the first, and the item says it has something to reconcile.
+//
+// ⚑ WHAT KIND OF THING IT IS, AND WHERE IT STANDS, ARE TWO FACTS. An item is an input, a piece of evidence, a
+//   finding, a proposal, a decision, a deliverable (`Kind`) — and it is unverified, accepted, rejected or superseded
+//   (`Standing`). Two items that contradict each other stay linked as a disagreement until a decision resolves it.
+//
+// ⚑ ONE KIND CAN BE SEEN BY FEWER PEOPLE, AND KEPT FOR LESS TIME. The app says, per kind: restricted or not, and how
+//   long it is kept. A restricted item is read by whoever added it and by the people the kind — or the item — was
+//   opened to; everything else is read by whoever is on the assignment.
+package Osysharp.WorkRepositories {
+  version     "1.1.0";
+  minPlatform "0.14.0";
+  summary     "the shared repository of an assignment: evidence, correspondence, findings, documents, proposals, decisions and deliverables as typed items — each version kept with who or what added it and from what source, concurrent contributions kept side by side, standings and visible disagreements, access and retention per kind, items opened one by one to somebody who is not on the assignment.";
+
+  model "model/**/*.osy";
+  tests "tests";
+  // The personal data its own fields hold (`[Classification(Personal.X)]`): who added and settled what, and what
+  // an item says — which can be about anybody.
+  personal Identity;
+  personal Content;
+  // The assignment a repository belongs to, and who is on it.
+  use Osysharp.Assignments@1;
+  use Osysharp.Identity@0;
+  // A version may be a file.
+  use Osysharp.Storage;
+  // The repository's views — themed by the app.
+  use Osysharp.Ui;
+}

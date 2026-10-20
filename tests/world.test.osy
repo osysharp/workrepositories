@@ -1,0 +1,39 @@
+// The company the tests run in: a hiring manager, the recruiter who runs the hire, two interviewers, the records
+// officer, and somebody who has nothing to do with it.
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+using Hiring;
+
+[TestFixture]
+void Office() {
+  var hanna = new Person { Email = "hanna@hiring.example", DisplayName = "Hanna Roos" };
+  var rut   = new Person { Email = "rut@hiring.example",   DisplayName = "Rut Sand" };
+  var ivo   = new Person { Email = "ivo@hiring.example",   DisplayName = "Ivo Berg" };
+  var lena  = new Person { Email = "lena@hiring.example",  DisplayName = "Lena Falk" };
+  var otto  = new Person { Email = "otto@hiring.example",  DisplayName = "Otto Lund" };
+  var pia   = new Person { Email = "pia@hiring.example",   DisplayName = "Pia Holm" };
+  new RoleGrant { Member = hanna, Role = HiringRole.Manager };
+  new RoleGrant { Member = rut,   Role = HiringRole.Recruiter };
+  new RoleGrant { Member = ivo,   Role = HiringRole.Interviewer };
+  new RoleGrant { Member = lena,  Role = HiringRole.Interviewer };
+  new RoleGrant { Member = otto,  Role = HiringRole.Records };
+  new RoleGrant { Member = pia,   Role = HiringRole.Interviewer };
+}
+
+principal Hanna => Person.Single(p => p.Email == "hanna@hiring.example");
+principal Rut   => Person.Single(p => p.Email == "rut@hiring.example");
+principal Ivo   => Person.Single(p => p.Email == "ivo@hiring.example");
+principal Lena  => Person.Single(p => p.Email == "lena@hiring.example");
+principal Otto  => Person.Single(p => p.Email == "otto@hiring.example");
+principal Pia   => Person.Single(p => p.Email == "pia@hiring.example");
+
+/// The hire, opened by the hiring manager: Rut owns it, Ivo and Lena interview.
+Guid OpenTheHire() {
+  Guid id = Guid.Empty;
+  runas (Hanna) { id = OpenHire("Senior implementation consultant", Rut, [Ivo, Lena]).Id; }
+  return id;
+}
+
+Assignment Hire(Guid id) { return Assignment.Single(a => a.Id == id); }
+RepositoryItem Item(Guid id) { return RepositoryItem.Single(i => i.Id == id); }

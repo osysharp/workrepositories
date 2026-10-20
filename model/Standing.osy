@@ -1,0 +1,191 @@
+// Where an item stands — unverified, accepted, rejected, superseded — and the disagreements between items, kept
+// visible until a decision settles them.
+namespace Osysharp.WorkRepositories;
+
+using Osysharp.Identity;
+using Osysharp.Assignments;
+
+/// Take an item as right. Whoever is in charge of the assignment may: they asked for it, they own it, or they
+/// oversee assignments.
+///
+///     AcceptItem(finding, "Confirmed against the service log");
+[Server, Authorize(IsAuthenticated)]
+public void AcceptItem(RepositoryItem item, string why = "") {
+  RequireMaySettle(item, "accept it");
+  SettleItem(item, ItemStanding.Accepted, why, null);
+  Raise(new RepositoryItemAccepted { Item = item });
+}
+
+/// Take an item as wrong. It is kept, says so, and can no longer meet a criterion.
+[Server, Authorize(IsAuthenticated)]
+public void RejectItem(RepositoryItem item, string why) {
+  RequireMaySettle(item, "reject it");
+  if (why.Trim() == "") { throw new ValidationException("Say why it is rejected: it is kept with the item."); }
+  SettleItem(item, ItemStanding.Rejected, why, null);
+  Raise(new RepositoryItemRejected { Item = item, Why = why.Trim() });
+}
+
+/// Another item takes this one's place: a newer statement, a corrected document. Anybody who works on the
+/// assignment may say so.
+[Server, Authorize(IsAuthenticated)]
+public void SupersedeItem(RepositoryItem item, RepositoryItem by, string why = "") {
+  if (by == item) { throw new ValidationException("An item is not superseded by itself."); }
+  if (by.Assignment != item.Assignment) { throw new ValidationException("An item is superseded by one of the same assignment."); }
+  SettleItem(item, ItemStanding.Superseded, why, by);
+}
+
+/// Put an item back to unverified: what was said about it no longer holds.
+[Server, Authorize(IsAuthenticated)]
+public void QuestionItem(RepositoryItem item, string why) {
+  RequireMaySettle(item, "put it back in question");
+  if (why.Trim() == "") { throw new ValidationException("Say why it is back in question: it is kept with the item."); }
+  SettleItem(item, ItemStanding.Unverified, why, null);
+}
+
+/// The one place an item's standing changes, with its line on the assignment.
+[Server, Authorize(IsAuthenticated)]
+internal void SettleItem(RepositoryItem item, ItemStanding standing, string why, RepositoryItem? supersededBy) {
+  if (item.ErasedAt != null) { throw new RepositoryRefused($"“{item.Title}” was erased."); }
+  item.Standing = standing;
+  item.StandingWhy = Clip(why.Trim(), 600);
+  item.StandingBy = Contributor();
+  item.StandingAt = DateTime.UtcNow;
+  item.SupersededBy = supersededBy;
+  var name = item.Restricted ? "A restricted item" : "“" + item.Title + "”";
+  var word = standing == ItemStanding.Accepted ? "was accepted" : standing == ItemStanding.Rejected ? "was rejected"
+           : standing == ItemStanding.Superseded ? "was superseded" : "is back to unverified";
+  NoteActivity(item.Assignment, ActivityKind.Note, $"{name} {word}" + (item.StandingWhy == "" ? "." : ": " + item.StandingWhy));
+}
+
+void RequireMaySettle(RepositoryItem item, string what) {
+  if (InChargeOf(item.Assignment)) { return; }
+  throw new NotAuthorized($"Only whoever is in charge of “{item.Assignment.Title}” may {what}.");
+}
+
+/// Whether the caller looks after the repositories. The app itself does.
+bool LooksAfterRepositories() {
+  var me = Contributor();
+  if (me == null) { return Security.CurrentUserId == null; }
+  return Security.Authorize(me!, ManagesWorkRepositories);
+}
+
+// ── meeting a criterion with an item ────────────────────────────────────────────────────────────────────────────────
+
+/// ⭐ MEET A CRITERION WITH AN ITEM: the criterion says what met it in words, and points at the item as what that
+/// rests on. An item that was rejected, superseded or erased meets nothing.
+///
+///     MeetWith(CriterionOf(a, "delivered-or-refunded"), scan, "The carrier's scan shows it delivered");
+[Server]
+public void MeetWith(AssignmentCriterion criterion, RepositoryItem item, string metBy) {
+  if (item.Assignment != criterion.Assignment) { throw new ValidationException("The item belongs to another assignment."); }
+  if (item.ErasedAt != null || item.Standing == ItemStanding.Rejected || item.Standing == ItemStanding.Superseded) {
+    throw new RepositoryRefused($"“{item.Title}” is {StandingWords(item)}, and meets nothing.");
+  }
+  MeetCriterion(criterion, metBy, evidence: item.Id, evidenceType: "RepositoryItem");
+}
+
+string StandingWords(RepositoryItem item) {
+  if (item.ErasedAt != null) { return "erased"; }
+  return item.Standing == ItemStanding.Accepted ? "accepted" : item.Standing == ItemStanding.Rejected ? "rejected"
+       : item.Standing == ItemStanding.Superseded ? "superseded" : "unverified";
+}
+
+// ── disagreements ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// ⭐ TWO ITEMS THAT DO NOT AGREE — a finding and the evidence against it, two specialists' conclusions. Kept as a
+/// row of its own, and open until a decision settles it: nothing quietly drops the side that lost.
+public entity RepositoryDisagreement {
+  [Required, Immutable, Index] Assignment Assignment;
+  [Required, Immutable] RepositoryItem First;
+  [Required, Immutable] RepositoryItem Second;
+  /// What they disagree about.
+  [Required, MaxLength(1000), Classification(Personal.Content)] string About;
+  /// Each item's kind, whether it is restricted and who added it — the items' own, kept here so a disagreement is
+  /// read by exactly whoever may read BOTH of the items it is about.
+  [Immutable] ItemKind FirstKind = ItemKind.Input;
+  [Immutable] ItemKind SecondKind = ItemKind.Input;
+  bool FirstRestricted = false;
+  bool SecondRestricted = false;
+  [Classification(Personal.Identity)] Principal? FirstAddedBy;
+  [Classification(Personal.Identity)] Principal? SecondAddedBy;
+  [Classification(Personal.Identity)] Principal? RaisedBy;
+  [Immutable] DateTime RaisedAt = DateTime.UtcNow;
+  /// The decision that settled it — an item of kind `Decision` — and what it said.
+  RepositoryItem? Resolution;
+  [MaxLength(1000), Classification(Personal.Content)] string ResolvedHow = "";
+  [Classification(Personal.Identity)] Principal? ResolvedBy;
+  DateTime? ResolvedAt;
+
+  security {
+    // Whoever is on the assignment and may read both items reads that they disagree: what a disagreement is about
+    // says something of each side, so it is never shown to somebody who was not given one of them.
+    allow read when IsAuthenticated where AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user)
+      && (!FirstRestricted || FirstAddedBy == user
+          || RepositoryShare.Any(s => s.Assignment.Id == Assignment.Id && s.Person == user && ((s.Item == null && s.Kind == FirstKind) || s.Item.Id == First.Id)))
+      && (!SecondRestricted || SecondAddedBy == user
+          || RepositoryShare.Any(s => s.Assignment.Id == Assignment.Id && s.Person == user && ((s.Item == null && s.Kind == SecondKind) || s.Item.Id == Second.Id)));
+    allow read when OverseesAssignments where !FirstRestricted && !SecondRestricted;
+    allow read when ManagesWorkRepositories;
+    allow create when IsAuthenticated where AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user && p.Acts);
+    allow create when OverseesAssignments || ManagesWorkRepositories;
+    allow update when IsAuthenticated where AssignmentParticipant.Any(p => p.Assignment.Id == Assignment.Id && p.Person == user && p.Acts);
+    allow update when OverseesAssignments || ManagesWorkRepositories;
+    deny create except via NoteDisagreement;
+    deny update Resolution, ResolvedAt except via ResolveDisagreement;
+    // What it was about and how it was settled go when either item is erased; who, when they are taken off it.
+    deny update ResolvedHow except via ResolveDisagreement, EraseItem;
+    deny update ResolvedBy except via ResolveDisagreement, TakeContributorOffRepositories;
+    deny update About except via EraseItem;
+    deny update FirstAddedBy, SecondAddedBy, RaisedBy except via TakeContributorOffRepositories;
+    deny update FirstRestricted, SecondRestricted except via RestrictItem;
+    deny delete;
+  }
+}
+
+/// Record that two items do not agree. Anybody who works on the assignment may — a specialist who sees a conflict
+/// says so, and it stays on the assignment until it is settled.
+[Server, Authorize(IsAuthenticated)]
+public RepositoryDisagreement NoteDisagreement(RepositoryItem first, RepositoryItem second, string about) {
+  if (first == second) { throw new ValidationException("An item does not disagree with itself."); }
+  if (first.Assignment != second.Assignment) { throw new ValidationException("The two items belong to different assignments."); }
+  if (about.Trim() == "") { throw new ValidationException("Say what they disagree about."); }
+  var there = RepositoryDisagreement.FirstOrDefault(d => d.ResolvedAt == null && ((d.First == first && d.Second == second) || (d.First == second && d.Second == first)));
+  if (there != null) { return there!; }
+  var d = new RepositoryDisagreement {
+    Assignment = first.Assignment, First = first, Second = second, About = Clip(about.Trim(), 1000), RaisedBy = Contributor(),
+    FirstKind = first.Kind, SecondKind = second.Kind, FirstRestricted = first.Restricted, SecondRestricted = second.Restricted,
+    FirstAddedBy = first.AddedBy, SecondAddedBy = second.AddedBy,
+  };
+  // What it is about is said on the assignment only when both sides are everybody's to read.
+  NoteActivity(first.Assignment, ActivityKind.Note, first.Restricted || second.Restricted
+    ? "A disagreement between two items was recorded." : $"A disagreement was recorded: {d.About}");
+  Raise(new RepositoryDisagreementRaised { Disagreement = d });
+  return d;
+}
+
+/// ⭐ SETTLE A DISAGREEMENT WITH A DECISION — an item of kind `Decision`, written by somebody in charge of the
+/// assignment. The decision is accepted as it settles; the two items stay as they are, and `how` says what became
+/// of them.
+[Server, Authorize(IsAuthenticated)]
+public void ResolveDisagreement(RepositoryDisagreement disagreement, RepositoryItem decision, string how) {
+  if (disagreement.ResolvedAt != null) { return; }
+  if (!InChargeOf(disagreement.Assignment)) {
+    throw new NotAuthorized($"Only whoever is in charge of “{disagreement.Assignment.Title}” may settle a disagreement on it.");
+  }
+  if (decision.Kind != ItemKind.Decision || decision.Assignment != disagreement.Assignment) {
+    throw new ValidationException("A disagreement is settled by a decision recorded on the same assignment: an item of kind `Decision`.");
+  }
+  if (how.Trim() == "") { throw new ValidationException("Say how it was settled."); }
+  disagreement.Resolution = decision;
+  disagreement.ResolvedHow = Clip(how.Trim(), 1000);
+  disagreement.ResolvedBy = Contributor();
+  disagreement.ResolvedAt = DateTime.UtcNow;
+  if (decision.Standing != ItemStanding.Accepted) { SettleItem(decision, ItemStanding.Accepted, "It settled a disagreement.", null); }
+  NoteProgress(disagreement.Assignment, disagreement.FirstRestricted || disagreement.SecondRestricted || decision.Restricted
+    ? "A disagreement was settled by a decision." : $"A disagreement was settled: {disagreement.ResolvedHow}", decision.Id, "RepositoryItem");
+}
+
+/// The disagreements of an assignment that nobody has settled.
+public List<RepositoryDisagreement> OpenDisagreements(Assignment a) {
+  return RepositoryDisagreement.Where(d => d.Assignment == a && d.ResolvedAt == null).OrderBy(d => d.RaisedAt).ToList();
+}

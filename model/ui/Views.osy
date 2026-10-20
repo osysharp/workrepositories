@@ -1,0 +1,257 @@
+// A REPOSITORY ON AN ASSIGNMENT'S PAGE, and one item on a page of its own.
+namespace Osysharp.WorkRepositories;
+
+using Osysharp.Ui;
+using Osysharp.Assignments;
+
+/// THE REPOSITORY OF AN ASSIGNMENT — its items, each with what kind of thing it is, where it stands, who or what
+/// added it, and whether a contribution waits beside it; and the disagreements nobody has settled. Place it by
+/// itself — `RepositoryList(assignment, item => "/items/" + item)` — or let it arrive on every assignment's page:
+/// it is contributed to `AssignmentPanel`. `open` says where the app shows one item, so each row is a link.
+[Composable]
+public component RepositoryList(Guid assignment, Func<Guid, string>? open = null) {
+  RepositorySheet sheet = new RepositorySheet();
+  bool loaded = false;
+  string problem = "";
+  on mount {
+    try { sheet = RepositoryOf(assignment); } catch (Exception ex) { problem = ex.Message; }
+    loaded = true;
+  }
+  render {
+    Stack(gap: 3, w: "100%", label: "Repository") {
+      Row(gap: 2, align: Align.Center) {
+        SectionLabel("Repository");
+        Spacer();
+        if (loaded) {
+          Text(sheet.Items.Count == 1 ? "1 item" : sheet.Items.Count + " items", fontSize: FontSize.Caption, color: Colors.TextMuted,
+               fontVariant: FontVariant.TabularNums);
+        }
+      }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      if (!loaded) { SkeletonText(); }
+      if (loaded && problem == "" && sheet.Items.Count == 0) {
+        Text("Nothing has been kept for it yet.", fontSize: FontSize.Label, color: Colors.TextMuted);
+      }
+      foreach (var d in sheet.Disagreements) {
+        if (d.Open) {
+          Row(gap: 2, p: 3, align: Align.Start, rounded: Radius.Md, borderW: 1, border: Colors.Warning, label: "Disagreement") {
+            Box(pt: "2px", decorative: true) { Icon(Icons.Warning, size: 16, color: Colors.Warning); }
+            Stack(gap: "2px", grow: 1, minW: "0") {
+              Text("Not settled: " + d.About, fontSize: FontSize.Label, fontWeight: FontWeight.Medium);
+              Text("Between " + d.Between, fontSize: FontSize.Caption, color: Colors.TextSecondary);
+            }
+          }
+        }
+      }
+      Stack(gap: 0, role: UiRole.List, label: "Items") {
+        foreach (var i in sheet.Items) { RepositoryItemRow(i, open == null ? "" : open(i.Id)); }
+      }
+    }
+  }
+}
+
+/// The repository, on every assignment's page.
+[Contribution("Repository")]
+component RepositoryOnTheAssignment(Guid assignment) : AssignmentPanel {
+  // Where the app shows one item — asked once, as the panel opens.
+  string path = "";
+  bool asked = false;
+  on mount { path = ItemPath(); asked = true; }
+  render {
+    if (asked) { RepositoryList(assignment, id => path == "" ? "" : path + id); }
+  }
+}
+
+/// One item in a list.
+[Composable]
+public component RepositoryItemRow(ItemRow i, string href = "") {
+  render {
+    Row(gap: 3, py: 2, align: Align.Start, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: i.Title) {
+      Text("" + i.Number, fontSize: FontSize.Caption, fontFamily: Font.Mono, color: Colors.TextMuted, minW: "20px", pt: "2px",
+           fontVariant: FontVariant.TabularNums);
+      Stack(gap: "3px", grow: 1, minW: "0") {
+        if (href != "") { Link(href: href, color: Colors.OnSurface) { Text(i.Title, fontSize: FontSize.Label, fontWeight: FontWeight.Medium); } }
+        else { Text(i.Title, fontSize: FontSize.Label, fontWeight: FontWeight.Medium); }
+        Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+          Text(i.KindWords, fontSize: FontSize.Caption, color: Colors.TextSecondary, whiteSpace: WhiteSpace.Nowrap);
+          Text(i.Added, fontSize: FontSize.Caption, color: Colors.TextMuted);
+          if (i.Version > 1) { Text("version " + i.Version, fontSize: FontSize.Caption, color: Colors.TextMuted, whiteSpace: WhiteSpace.Nowrap); }
+        }
+      }
+      Row(gap: 1, align: Align.Center, wrap: Wrapping.Wrap, justify: Justify.End, shrink: 0) {
+        if (i.Unreconciled > 0) { Badge(i.Unreconciled == 1 ? "1 to reconcile" : i.Unreconciled + " to reconcile", tone: Tone.Warning); }
+        if (i.Restricted) { Badge("Restricted", tone: Tone.Ghost); }
+        if (i.Erased) { Badge("Erased", tone: Tone.Ghost); }
+        else { Badge(i.StandingWords, tone: StandingTone(i.Standing)); }
+      }
+    }
+  }
+}
+
+/// ⭐ ONE ITEM ON A PAGE OF ITS OWN — what it says now, where it stands and why, where it came from, and every
+/// version it has had, with the contributions that wait beside the one that stands. Place it where the app shows an
+/// item: `RepositoryItemView(id)`. Whoever is in charge of the assignment accepts or rejects it from here.
+[Composable]
+public component RepositoryItemView(Guid item) {
+  ItemSheet? sheet = null;
+  bool loaded = false;
+  string problem = "";
+  bool rejecting = false;
+  string why = "";
+  int keeping = 0;
+  string how = "";
+
+  action Load() {
+    try { sheet = ItemSheetOf(item); problem = ""; } catch (Exception ex) { problem = ex.Message; }
+    loaded = true;
+  }
+  on mount { Load(); }
+  action Accept() {
+    try { AcceptItem(RepositoryItem.Single(i => i.Id == item)); } catch (Exception ex) { problem = ex.Message; }
+    Load();
+  }
+  action AskToReject() { rejecting = true; }
+  action Dismiss() { rejecting = false; keeping = 0; }
+  action AskToKeep(int version) { keeping = version; how = ""; }
+  action Keep() {
+    try { ReconcileItem(RepositoryItem.Single(i => i.Id == item), keeping, how); keeping = 0; how = ""; } catch (Exception ex) { problem = ex.Message; }
+    Load();
+  }
+  action Reject() {
+    try { RejectItem(RepositoryItem.Single(i => i.Id == item), why); rejecting = false; why = ""; } catch (Exception ex) { problem = ex.Message; }
+    Load();
+  }
+
+  render {
+    Stack(gap: 5, w: "100%", label: "Item") {
+      if (!loaded) { SkeletonText(); }
+      if (loaded && sheet == null) { EmptyState("No such item", body: "It does not exist, or it is not yours to see."); }
+      if (sheet != null) {
+        Stack(gap: 2) {
+          Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+            Badge(sheet.Item.KindWords, tone: Tone.Default);
+            if (sheet.Item.Erased) { Badge("Erased", tone: Tone.Ghost); }
+            else { Badge(sheet.Item.StandingWords, tone: StandingTone(sheet.Item.Standing)); }
+            if (sheet.Item.Restricted) { Badge("Restricted", tone: Tone.Ghost); }
+            if (sheet.Item.Unreconciled > 0) { Badge(sheet.Item.Unreconciled == 1 ? "1 to reconcile" : sheet.Item.Unreconciled + " to reconcile", tone: Tone.Warning); }
+          }
+          Text(sheet.Item.Title, fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold, letterSpacing: "-0.015em");
+          Text("Item " + sheet.Item.Number + " · added by " + sheet.Item.Added, fontSize: FontSize.Label, color: Colors.TextMuted);
+        }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        if (sheet.Item.Erased) {
+          Alert("Its content was erased: " + sheet.ErasedWhy, tone: Tone.Default);
+        }
+        if (sheet.StandingWhy != "" || sheet.SupersededBy != "") {
+          Stack(gap: 1, p: 4, rounded: Radius.Md, bg: Colors.Sunken, label: "Standing") {
+            SectionLabel("Why it stands there");
+            if (sheet.StandingWhy != "") { Text(sheet.StandingWhy, fontSize: FontSize.Label); }
+            if (sheet.SupersededBy != "") { Text("Its place was taken by “" + sheet.SupersededBy + "”.", fontSize: FontSize.Label); }
+            if (sheet.StandingBy != "") { Text(sheet.StandingBy, fontSize: FontSize.Caption, color: Colors.TextMuted); }
+          }
+        }
+        foreach (var d in sheet.Disagreements) {
+          Row(gap: 2, p: 3, align: Align.Start, rounded: Radius.Md, borderW: 1, border: d.Open ? Colors.Warning : Colors.Border, label: "Disagreement") {
+            Box(pt: "2px", decorative: true) {
+              if (d.Open) { Icon(Icons.Warning, size: 16, color: Colors.Warning); }
+              else { Icon(Icons.Check, size: 16, color: Colors.Success); }
+            }
+            Stack(gap: "2px", grow: 1, minW: "0") {
+              Text((d.Open ? "Not settled: " : "Settled: ") + d.About, fontSize: FontSize.Label, fontWeight: FontWeight.Medium);
+              Text("Between " + d.Between, fontSize: FontSize.Caption, color: Colors.TextSecondary);
+              if (d.Settled != "") { Text(d.Settled, fontSize: FontSize.Caption, color: Colors.TextSecondary); }
+            }
+          }
+        }
+
+        Stack(gap: 2, label: "Versions") {
+          Row(gap: 2, align: Align.Center) {
+            SectionLabel(sheet.Versions.Count == 1 ? "What it says" : "Its versions");
+            Spacer();
+            if (sheet.Versions.Count > 1) { Text(sheet.Versions.Count + " versions, none overwritten", fontSize: FontSize.Caption, color: Colors.TextMuted); }
+          }
+          // The one that stands first, then the rest, newest first.
+          foreach (var v in sheet.Versions) {
+            if (v.Stands) { VersionCard(v, sheet.MayReconcile && sheet.Item.Unreconciled > 0, AskToKeep); }
+          }
+          foreach (var v in sheet.Versions.OrderByDescending(x => x.Number).ToList()) {
+            if (!v.Stands) { VersionCard(v, sheet.MayReconcile && v.Unreconciled, AskToKeep); }
+          }
+        }
+
+        if (sheet.OpenedTo.Count > 0 || sheet.RetainUntil != null) {
+          Stack(gap: 1, label: "Access and retention") {
+            SectionLabel("Access and retention");
+            if (sheet.OpenedTo.Count > 0) { Text("Opened to " + string.Join(", ", sheet.OpenedTo), fontSize: FontSize.Label); }
+            if (sheet.RetainUntil != null) { Text($"Kept until {sheet.RetainUntil!:d MMM yyyy}", fontSize: FontSize.Label); }
+          }
+        }
+
+        if (sheet.MaySettle && !sheet.Item.Erased) {
+          Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+            if (sheet.Item.Standing != ItemStanding.Accepted) { Button("Accept", onPress: Accept, tone: Tone.Primary); }
+            if (sheet.Item.Standing != ItemStanding.Rejected) { Button("Reject…", onPress: AskToReject); }
+          }
+        }
+        if (keeping > 0) {
+          Dialog("Let version " + keeping + " stand", onDismiss: Dismiss, subtitle: "Every version stays in the item's history. Say how it was settled.") {
+            Stack(gap: 3) {
+              TextAreaField("How it was settled", value: how, rows: 3);
+              Row(gap: 2, justify: Justify.End) {
+                Button("Cancel", onPress: Dismiss, tone: Tone.Ghost);
+                Button("Let it stand", onPress: Keep, tone: Tone.Primary, disabled: how.Trim() == "");
+              }
+            }
+          }
+        }
+        if (rejecting) {
+          Dialog("Reject this item", onDismiss: Dismiss, subtitle: "It is kept, says it was rejected, and can no longer meet a criterion.") {
+            Stack(gap: 3) {
+              TextAreaField("Why", value: why, rows: 3);
+              Row(gap: 2, justify: Justify.End) {
+                Button("Cancel", onPress: Dismiss, tone: Tone.Ghost);
+                Button("Reject", onPress: Reject, tone: Tone.Danger, disabled: why.Trim() == "");
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// One version: what it says, who or what wrote it and from what, and whether it stands or waits beside the one
+/// that does.
+[Composable]
+public component VersionCard(VersionRow v, bool canKeep = false, Action<int>? onKeep = null) {
+  action KeepThis() { if (onKeep != null) { onKeep(v.Number); } }
+  render {
+    Stack(gap: 2, p: 4, rounded: Radius.Md, borderW: 1, border: v.Unreconciled ? Colors.Warning : (v.Stands ? Colors.Primary : Colors.Border),
+          label: "Version " + v.Number) {
+      Row(gap: 2, align: Align.Center, wrap: Wrapping.Wrap) {
+        Text("Version " + v.Number, fontSize: FontSize.Caption, fontWeight: FontWeight.Semibold);
+        if (v.Stands) { Badge("Stands", tone: Tone.Primary); }
+        if (v.Unreconciled) { Badge("Waits to be reconciled", tone: Tone.Warning); }
+        Spacer();
+        Text(v.By + $" · {v.At:d MMM HH:mm}", fontSize: FontSize.Caption, color: Colors.TextMuted);
+      }
+      if (v.Content == "") { Text("Nothing is kept of what it said.", fontSize: FontSize.Label, color: Colors.TextMuted); }
+      else { Text(v.Content, whiteSpace: WhiteSpace.PreWrap, fontFamily: v.ContentType == "application/json" ? Font.Mono : Font.Sans,
+                  fontSize: v.ContentType == "application/json" ? FontSize.Label : FontSize.Body); }
+      if (v.Note != "") { Text(v.Note, fontSize: FontSize.Label, color: Colors.TextSecondary); }
+      if (v.Provenance != "" || v.BasedOn != null) {
+        Text((v.BasedOn == null ? "" : "Written from version " + v.BasedOn + (v.Provenance == "" ? "" : " · ")) + v.Provenance,
+             fontSize: FontSize.Caption, color: Colors.TextMuted);
+      }
+      if (canKeep && onKeep != null) {
+        Stack(align: Align.Start) { Button(v.Stands ? "Keep this one…" : "Let this one stand…", onPress: KeepThis, size: Size.Sm); }
+      }
+    }
+  }
+}
+
+/// The tone an item's standing is shown in.
+public Tone StandingTone(ItemStanding standing) {
+  return standing == ItemStanding.Accepted ? Tone.Success : standing == ItemStanding.Rejected ? Tone.Danger
+       : standing == ItemStanding.Superseded ? Tone.Ghost : Tone.Default;
+}

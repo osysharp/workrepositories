@@ -1,0 +1,125 @@
+// A company hiring a senior implementation consultant. The hire is an assignment; everything it learns on the way —
+// the role, the applications, the interviewers' feedback, the decision — is an item in its repository.
+namespace Hiring;
+
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+
+[Role] enum HiringRole { Authenticator, Manager, Recruiter, Interviewer, Records, Screener }
+
+partial entity RoleGrant { security { allow read when IsAuthenticated; } }
+
+policy IsManager   => RoleGrant.Any(g => g.Member == user && g.Role == HiringRole.Manager);
+policy IsRecruiter => RoleGrant.Any(g => g.Member == user && g.Role == HiringRole.Recruiter);
+policy IsRecords   => RoleGrant.Any(g => g.Member == user && g.Role == HiringRole.Records);
+
+// Managers ask for a hire; recruiters oversee every hire; a manager accepts an exception to what done means.
+policy OpensAssignments            => IsManager;
+policy OverseesAssignments         => IsRecruiter;
+policy AcceptsAssignmentExceptions => IsManager;
+// The records officer looks after what is kept, and for how long.
+policy ManagesWorkRepositories     => IsRecords;
+// …and, when an item is erased, takes its title out of the lines on the hire that named it.
+policy ErasesAssignments           => IsRecords;
+
+/// Somebody at the company — and the screener's own account.
+entity Person : Principal {
+  security {
+    allow read when IsAuthenticated || IsAuthenticator;
+    allow create when IsAuthenticator;
+  }
+}
+
+/// Reads each application as it arrives and notes what it says. A declared actor: its notes are its own, not a
+/// person's.
+[Actor(Roles = [HiringRole.Screener])]
+public class Screener {
+  public static Person Principal => new Person { Email = "screener@hiring.example", DisplayName = "Screener" };
+}
+
+/// Open the hire.
+public Assignment OpenHire(string role, Person recruiter, List<Person> interviewers) {
+  var hire = OpenAssignment(new NewAssignment {
+    Title = "Hire: " + role,
+    Goal = "A " + role + " has accepted our offer.",
+    Criteria = ["The role is agreed", "Two interviewers have given feedback", "The hiring decision is recorded"],
+    Owner = recruiter,
+  });
+  foreach (var who in interviewers) { AddParticipant(hire, who, ParticipantRole.Contributor); }
+  AddParticipant(hire, Actor.Of<Screener>(), ParticipantRole.Assignee);
+  return hire;
+}
+
+/// An interviewer's feedback on a candidate.
+public RepositoryItem GiveFeedback(Assignment hire, string candidate, string feedback) {
+  return AddItem(hire, new NewItem {
+    Kind = ItemKind.Finding, Title = NameOf(Session.CurrentUser) + "'s feedback on " + candidate, Content = feedback,
+    Source = new ItemSource { From = "An interview" },
+  });
+}
+
+/// The screener notes what an application says — as itself.
+public Guid ScreenApplication(Assignment hire, RepositoryItem application) {
+  Guid note = Guid.Empty;
+  runas (Screener, scope: hire) {
+    var current = CurrentOf(application);
+    var written = AddItem(hire, new NewItem {
+      Kind = ItemKind.Extracted, Title = "Screening of " + application.Title,
+      Content = "Eight years of implementation work; two ERP rollouts.",
+      DataJson = "{\"years\":8,\"rollouts\":2}",
+      Source = new ItemSource { From = "The application itself", Ref = application.Id, RefType = "RepositoryItem", Agent = "Hiring.Screener", Model = "scripted-small", Tool = "ReadApplication" },
+    });
+    note = written.Id;
+  }
+  return note;
+}
+
+/// The app files the outcome itself when a hire closes.
+[On]
+void FileTheOutcome(AssignmentCompleted e) {
+  AddItem(e.Assignment, new NewItem {
+    Kind = ItemKind.Deliverable, Key = "outcome", Title = "Outcome of " + e.Assignment.Title, Content = e.Assignment.Outcome,
+    Source = new ItemSource { From = "The assignment's own outcome" },
+  });
+}
+
+// ── what app code is not able to do ─────────────────────────────────────────────────────────────────────────────────
+
+[SuppressWarning("IMPORTED_ENTITY_HAS_NO_POLICY")] partial entity RepositoryItem { }
+[SuppressWarning("IMPORTED_ENTITY_HAS_NO_POLICY")] partial entity RepositoryItemVersion { }
+[SuppressWarning("IMPORTED_ENTITY_HAS_NO_POLICY")] partial entity RepositoryShare { }
+[SuppressWarning("IMPORTED_ENTITY_HAS_NO_POLICY")] partial entity RepositoryDisagreement { }
+
+/// A version's content rewritten in place.
+public void RewriteVersion(RepositoryItemVersion version) { version.Content = "Nothing to see."; }
+
+/// An item accepted by writing its standing.
+public void ForceAccepted(RepositoryItem item) { item.Standing = ItemStanding.Accepted; }
+
+/// An item made without `AddItem`, and a version slipped under an item.
+public void ForgeItem(Assignment hire) {
+  new RepositoryItem { Assignment = hire, Kind = ItemKind.Decision, Title = "We hire my cousin", Key = "forged", Latest = 1, Current = 1 };
+}
+public void ForgeVersion(RepositoryItem item) {
+  new RepositoryItemVersion { Item = item, Assignment = item.Assignment, Number = 99, Content = "Slipped in." };
+}
+
+/// A restricted kind opened to oneself without asking.
+public void OpenToMyself(Assignment hire, Person me) {
+  new RepositoryShare { Assignment = hire, Kind = ItemKind.Finding, Person = me };
+}
+
+/// An item un-restricted by writing the flag.
+public void Unrestrict(RepositoryItem item) { item.Restricted = false; }
+
+/// An item given to nobody, and a version's note blanked, by hand.
+public void DisownItem(RepositoryItem item) { item.AddedBy = null; }
+public void BlankNote(RepositoryItemVersion version) { version.Note = ""; }
+
+/// Every line of a hire's activity, in one text.
+public string ActivityText(Assignment hire) {
+  var all = "";
+  foreach (var l in hire.Activity.OrderBy(l => l.Seq).ToList()) { all = all + l.Said + "\n"; }
+  return all;
+}

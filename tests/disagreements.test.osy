@@ -1,0 +1,33 @@
+// Osysharp.WorkRepositories — a disagreement is read by exactly whoever may read both of the items it is about.
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+using Hiring;
+
+[Test(Office)]
+void a_disagreement_about_restricted_items_is_read_only_by_whoever_reads_both() {
+  var hire = OpenTheHire();
+  Guid ivos = Guid.Empty;
+  Guid lenas = Guid.Empty;
+  runas (Ivo) { ivos = GiveFeedback(Hire(hire), "M. Okafor", "Could not explain a cutover plan.").Id; }
+  runas (Lena) { lenas = GiveFeedback(Hire(hire), "M. Okafor", "Walked through a cutover plan.").Id; }
+  runas (Rut) { OpenKindTo(Hire(hire), ItemKind.Finding, Hanna); }
+  runas (Hanna) { NoteDisagreement(Item(ivos), Item(lenas), "Whether the candidate can plan a cutover"); }
+
+  // The hiring manager was given the feedback: she reads that the two disagree, and about what.
+  runas (Hanna) { Assert.Equal("Whether the candidate can plan a cutover", OpenDisagreements(Hire(hire)).Single().About); }
+  // Each interviewer reads their own feedback and not the other's — so neither reads the disagreement, whose
+  // subject alone would tell them what the other thought.
+  runas (Ivo) {
+    Assert.Equal(0, RepositoryDisagreement.Count());
+    Assert.Equal(0, OpenDisagreements(Hire(hire)).Count);
+    Assert.False(ActivityOf(Hire(hire)).Any(l => l.Said.Contains("cutover")));
+    Assert.Contains("A disagreement between two items was recorded.", ActivityOf(Hire(hire)).Select(l => l.Said).ToList());
+  }
+  runas (Lena) { Assert.Equal(0, RepositoryDisagreement.Count()); }
+  // The recruiter oversees every hire, and was not given the feedback either.
+  runas (Rut) { Assert.Equal(0, RepositoryDisagreement.Count()); }
+  // Opened to everybody on the hire, both items — and the disagreement — are everybody's to read.
+  runas (Hanna) { RestrictItem(Item(ivos), false); RestrictItem(Item(lenas), false); }
+  runas (Ivo) { Assert.Equal(1, OpenDisagreements(Hire(hire)).Count); }
+}

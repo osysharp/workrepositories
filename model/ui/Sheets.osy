@@ -1,0 +1,167 @@
+// What a repository's views show, read in one go — as whoever is looking.
+namespace Osysharp.WorkRepositories;
+
+using Osysharp.Identity;
+using Osysharp.Assignments;
+
+/// One item as a list shows it.
+public class ItemRow {
+  public Guid Id;
+  public int Number = 0;
+  public string Title = "";
+  public ItemKind Kind = ItemKind.Input;
+  public string KindWords = "";
+  public ItemStanding Standing = ItemStanding.Unverified;
+  public string StandingWords = "";
+  public bool Restricted = false;
+  public bool Erased = false;
+  /// The version that stands, and how many contributions wait beside it.
+  public int Version = 0;
+  public int Unreconciled = 0;
+  /// Who or what added it, and when — "Resolver (agent) · 10 Mar 09:00".
+  public string Added = "";
+}
+
+/// One disagreement as a list shows it.
+public class DisagreementRow {
+  public Guid Id;
+  public string About = "";
+  public string Between = "";
+  public bool Open = true;
+  public string Settled = "";
+}
+
+/// An assignment's repository as its panel shows it.
+public class RepositorySheet {
+  public List<ItemRow> Items = [];
+  public List<DisagreementRow> Disagreements = [];
+  public int Unreconciled = 0;
+}
+
+/// The repository of one assignment, as whoever asks may read it.
+public RepositorySheet RepositoryOf(Guid assignment) {
+  var sheet = new RepositorySheet();
+  var a = Assignment.FirstOrDefault(x => x.Id == assignment);
+  // Somebody an item was opened to, and who is not on the assignment, still reads that item.
+  var items = a == null
+    ? RepositoryItem.Where(i => i.Assignment.Id == assignment).OrderBy(i => i.Number).ToList()
+    : ItemsOf(a!);
+  foreach (var i in items) {
+    sheet.Items.Add(RowOf(i));
+    sheet.Unreconciled = sheet.Unreconciled + i.Unreconciled;
+  }
+  if (a != null) {
+    foreach (var d in RepositoryDisagreement.Where(d => d.Assignment == a).OrderBy(d => d.RaisedAt).ToList()) {
+      sheet.Disagreements.Add(new DisagreementRow {
+        Id = d.Id, About = d.About, Open = d.ResolvedAt == null,
+        Between = TitleOrHidden(d.First) + " and " + TitleOrHidden(d.Second),
+        Settled = d.ResolvedAt == null ? "" : d.ResolvedHow,
+      });
+    }
+  }
+  return sheet;
+}
+
+ItemRow RowOf(RepositoryItem i) {
+  return new ItemRow {
+    Id = i.Id, Number = i.Number, Title = i.Title, Kind = i.Kind, KindWords = i.Kind.Label, Standing = i.Standing,
+    StandingWords = i.Standing.Label, Restricted = i.Restricted, Erased = i.ErasedAt != null, Version = i.Current,
+    Unreconciled = i.Unreconciled, Added = ByWords(i.AddedBy, i.AddedAs) + $" · {i.AddedAt:d MMM HH:mm}",
+  };
+}
+
+/// An item's title, or a word for one the reader may not read.
+string TitleOrHidden(RepositoryItem? item) { return item == null ? "an item you cannot read" : "“" + item!.Title + "”"; }
+
+/// Who or what wrote something, in words: "Rut Sand", "Screener (actor)", "The app" — and "Somebody no longer here"
+/// for a person or an actor who has since been taken off it.
+public string ByWords(Principal? who, ContributorKind how) {
+  if (how == ContributorKind.System) { return "The app"; }
+  if (who == null) { return FormerPersonWords(); }
+  return how == ContributorKind.Actor ? NameOf(who) + " (actor)" : NameOf(who);
+}
+
+/// One version as an item's page shows it.
+public class VersionRow {
+  public int Number = 0;
+  public string Content = "";
+  public string ContentType = "";
+  public string Data = "";
+  public string Note = "";
+  public string By = "";
+  public DateTime At;
+  public int? BasedOn;
+  public bool Stands = false;
+  public bool Unreconciled = false;
+  /// Where it came from, in a line — "From the carrier's tracking page · tool TrackParcel · model scripted-small".
+  public string Provenance = "";
+}
+
+/// One item as its page shows it.
+public class ItemSheet {
+  public ItemRow Item = new ItemRow();
+  public Guid Assignment;
+  public string StandingWhy = "";
+  public string StandingBy = "";
+  public string SupersededBy = "";
+  public string ErasedWhy = "";
+  public DateTime? RetainUntil;
+  public List<VersionRow> Versions = [];
+  public List<DisagreementRow> Disagreements = [];
+  /// The people this item — or its kind — was opened to.
+  public List<string> OpenedTo = [];
+  public bool MaySettle = false;
+  /// Whether whoever is looking works on the assignment, and so may say which version stands.
+  public bool MayReconcile = false;
+}
+
+/// ⭐ ONE ITEM, with every version, as whoever asks may read it. Null when it is not theirs to read.
+public ItemSheet? ItemSheetOf(Guid item) {
+  var found = RepositoryItem.FirstOrDefault(i => i.Id == item);
+  if (found == null) { return null; }
+  var i = found!;
+  var sheet = new ItemSheet {
+    Item = RowOf(i), Assignment = i.Assignment.Id, StandingWhy = i.StandingWhy, StandingBy = i.StandingBy == null ? "" : NameOf(i.StandingBy),
+    SupersededBy = i.SupersededBy == null ? "" : i.SupersededBy!.Title, ErasedWhy = i.ErasedWhy, RetainUntil = i.RetainUntil,
+  };
+  foreach (var v in VersionsOf(i)) {
+    sheet.Versions.Add(new VersionRow {
+      Number = v.Number, Content = v.Content, ContentType = v.ContentType, Data = v.Data == null ? "" : $"{v.Data}", Note = v.Note,
+      By = ByWords(v.By, v.AddedAs), At = v.At, BasedOn = v.BasedOn, Stands = v.Number == i.Current, Unreconciled = v.Unreconciled,
+      Provenance = ProvenanceWords(v),
+    });
+  }
+  foreach (var d in RepositoryDisagreement.Where(d => d.First == i || d.Second == i).OrderBy(d => d.RaisedAt).ToList()) {
+    sheet.Disagreements.Add(new DisagreementRow {
+      Id = d.Id, About = d.About, Open = d.ResolvedAt == null,
+      Between = TitleOrHidden(d.First) + " and " + TitleOrHidden(d.Second), Settled = d.ResolvedAt == null ? "" : d.ResolvedHow,
+    });
+  }
+  foreach (var s in RepositoryShare.Where(s => s.Item == i || (s.Assignment == i.Assignment && s.Item == null && s.Kind == i.Kind)).ToList()) {
+    sheet.OpenedTo.Add(NameOf(s.Person));
+  }
+  var a = Assignment.FirstOrDefault(x => x.Id == sheet.Assignment);
+  sheet.MaySettle = a != null && InChargeOf(a!);
+  var me = Security.CurrentUserId;
+  sheet.MayReconcile = sheet.MaySettle || (a != null && me != null && AssignmentParticipant.Any(p => p.Assignment == a && p.Person.Id == me && p.Acts));
+  return sheet;
+}
+
+string ProvenanceWords(RepositoryItemVersion v) {
+  List<string> parts = [];
+  if (v.From != "") { parts.Add("From " + LowerFirst(v.From)); }
+  if (v.Agent != "") { parts.Add("agent " + Bare(v.Agent)); }
+  if (v.Skill != "") { parts.Add("skill " + Bare(v.Skill) + (v.SkillVersion == "" ? "" : " v" + v.SkillVersion)); }
+  if (v.Tool != "") { parts.Add("tool " + v.Tool); }
+  if (v.Model != "") { parts.Add("model " + v.Model); }
+  return string.Join(" · ", parts);
+}
+
+string Bare(string fullName) {
+  var dot = fullName.LastIndexOf(".");
+  return dot < 0 ? fullName : fullName.Substring(dot + 1);
+}
+
+string LowerFirst(string text) {
+  return text.Length == 0 ? text : text.Substring(0, 1).ToLower() + text.Substring(1);
+}

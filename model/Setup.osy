@@ -1,0 +1,85 @@
+// What the app says: which kinds of item fewer people see, how long each kind is kept, and who looks after it all.
+namespace Osysharp.WorkRepositories;
+
+/// Who looks after the repositories: reads every item of every assignment, restricted ones included, and erases
+/// what has outlived its time — without being on any assignment. Nobody, until the app says:
+/// `policy ManagesWorkRepositories => IsRecordsOfficer;`.
+virtual policy ManagesWorkRepositories => false;
+
+/// What kind of thing an item is. ⚠ Appended, never inserted: an enum is stored by position.
+public enum ItemKind {
+  /// Something handed in as it came: an upload, a form, a statement. Not checked by anybody yet.
+  [Label("Input")] Input,
+  /// A document or a file.
+  [Label("Document")] Document,
+  /// Data read out of something else — the fields of an invoice, the rows of a log.
+  [Label("Extracted data")] Extracted,
+  /// Something that shows a fact: a scan, a measurement, a photo, a record of another system.
+  [Label("Evidence")] Evidence,
+  /// A message sent or received: a letter, a mail, a call note.
+  [Label("Correspondence")] Correspondence,
+  /// What somebody — a person or an agent — concluded from the evidence.
+  [Label("Finding")] Finding,
+  /// What somebody suggests doing. Not decided.
+  [Label("Proposal")] Proposal,
+  /// What was decided, and by whom.
+  [Label("Decision")] Decision,
+  /// A result handed over: the report, the repaired part's certificate, the signed contract.
+  [Label("Deliverable")] Deliverable,
+}
+
+/// Where an item stands. ⚠ Appended, never inserted.
+public enum ItemStanding {
+  /// Nobody has checked it.
+  [Label("Unverified")] Unverified,
+  /// Somebody in charge of the assignment took it as right.
+  [Label("Accepted")] Accepted,
+  /// Somebody in charge of the assignment took it as wrong. It is kept, and says so.
+  [Label("Rejected")] Rejected,
+  /// Another item took its place.
+  [Label("Superseded")] Superseded,
+}
+
+/// When the time an item is kept starts to run.
+public enum RetainFrom {
+  /// When the item is added.
+  Added,
+  /// When its assignment is closed — completed, cancelled or failed. Reopening the assignment stops the clock.
+  AssignmentClosed,
+}
+
+/// The rule for one kind of item — `new KindRule { Kind = ItemKind.Correspondence, Restricted = true, RetainFor = TimeSpan.FromDays(180) }`.
+public class KindRule {
+  public ItemKind Kind = ItemKind.Input;
+  /// Fewer people see it: whoever added it and whoever the kind, or the item, was opened to — not everybody on the
+  /// assignment.
+  public bool Restricted = false;
+  /// How long it is kept. Null: as long as the assignment is.
+  public TimeSpan? RetainFor;
+  public RetainFrom From = RetainFrom.AssignmentClosed;
+}
+
+/// How this app keeps its assignments' repositories —
+/// `app.WorkRepositories = new WorkRepositoriesSetup { Kinds = [ new KindRule { … } ] };`.
+[AppSetting("WorkRepositories")]
+public class WorkRepositoriesSetup {
+  /// The kinds that are restricted or kept for a set time. A kind with no rule is read by everybody on the
+  /// assignment and kept as long as the assignment is.
+  public List<KindRule> Kinds = [];
+  /// Where the app shows one item — the path an item's id is put after: "/items/". "": the repository on an
+  /// assignment's page lists its items without linking them.
+  public string ItemPath = "";
+}
+
+/// Where this app shows one item: the path its id is put after, or "" when the app has not said.
+public string ItemPath() { return App.Setting<WorkRepositoriesSetup>().ItemPath; }
+
+/// The rule the app set for a kind, or the default one.
+public KindRule RuleFor(ItemKind kind) {
+  foreach (var rule in App.Setting<WorkRepositoriesSetup>().Kinds) { if (rule.Kind == kind) { return rule; } }
+  return new KindRule { Kind = kind };
+}
+
+/// Something a repository was asked to do and did not, with the reason.
+/// A `ValidationException`, so the reason reaches whoever asked — a model whose tool ran into it included.
+public class RepositoryRefused : ValidationException { }

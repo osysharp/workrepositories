@@ -1,0 +1,16 @@
+// How the company keeps what a hire learns. In a file of its own with no `namespace`, because an `app.X = …`
+// statement's value is resolved outside the file's namespace.
+using Osysharp.WorkRepositories;
+
+app.WorkRepositories = new WorkRepositoriesSetup {
+  // Where this app shows one item.
+  ItemPath = "/items/",
+  Kinds = [
+    // What an interviewer thought of a candidate is read by the interviewer and by whoever it is opened to.
+    new KindRule { Kind = ItemKind.Finding, Restricted = true },
+    // Applications are kept for six months after the hire closes.
+    new KindRule { Kind = ItemKind.Document, RetainFor = TimeSpan.FromDays(180) },
+    // Letters to candidates are kept for thirty days from the day they are written.
+    new KindRule { Kind = ItemKind.Correspondence, RetainFor = TimeSpan.FromDays(30), From = RetainFrom.Added },
+  ],
+};

@@ -1,0 +1,15 @@
+// The producer's test project for Osysharp.WorkRepositories — a company hiring a consultant. The hire is one
+// assignment; its repository holds the role's requirements, the applications, what each interviewer thought, and the
+// decision. Interview feedback is read by fewer people than the rest, and applications are kept for six months.
+app Hiring {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.WorkRepositories@1;
+  use Osysharp.Assignments@1;
+  use Osysharp.Llm@2;
+  use Osysharp.Identity@0;
+  use Osysharp.Observability;
+  use Osysharp.Workflow;
+  use Osysharp.Storage;
+  use Osysharp.Ui;
+}
