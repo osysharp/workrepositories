@@ -1,0 +1,32 @@
+// Osysharp.WorkRepositories.Agents — what an agent finds lands in the assignment's repository as items, not as lines
+// of a trace.
+//
+//     public class Investigate : Skill<Order, Finding> {
+//       public override List<ActionInfo> Tools => [Actions.Of(TrackParcel), Actions.Of(RecordEvidence), Actions.Of(ListItems), Actions.Of(ReadItem)];
+//     }
+//
+// ⚑ THE AGENT WRITES ITEMS WITH TOOLS — `RecordEvidence`, `RecordFinding`, `RecordCorrespondence`, `ProposeAction` —
+//   each added as the agent's own account, on behalf of whoever asked, with where it came from and the piece of work
+//   it was written in. It reads what is already there by reference (`ListItems`, `ReadItem`): nothing is copied into
+//   its instructions.
+//
+// ⚑ WHAT IT HANDS BACK IS KEPT TOO. When a piece of agent work attached to an assignment finishes, its result is
+//   filed as a finding — unverified, with the agent, the skill and its version, and the receipt it came from.
+//
+// ⚑ A BRIDGE. An app that uses Osysharp.WorkRepositories and Osysharp.Agents writes nothing to get it.
+package Osysharp.WorkRepositories.Agents {
+  version     "1.1.0";
+  minPlatform "0.14.0";
+  summary     "an agent's findings as repository items: tools that record evidence, findings, correspondence and proposals as the agent, for whoever asked, with their source and the piece of work they were written in; tools that list and read items by reference; and the result of every piece of agent work attached to an assignment filed as an unverified finding with its receipt.";
+  completes   Osysharp.WorkRepositories@1, Osysharp.Agents@1;
+  model "model/*.osy";
+  tests "tests";
+  use Osysharp.WorkRepositories@1;
+  use Osysharp.Assignments@1;
+  use Osysharp.Assignments.Agents@1;
+  use Osysharp.Agents@1;
+  use Osysharp.Llm@2;
+  use Osysharp.Identity@0;
+  use Osysharp.Storage;
+  use Osysharp.Observability;
+}

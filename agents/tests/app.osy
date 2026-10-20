@@ -1,0 +1,18 @@
+// The producer's test project for Osysharp.WorkRepositories.Agents — a lab that tests water samples. A sample's
+// analysis is an assignment; an analyst agent reads the readings, writes down what they show, and hands back a
+// verdict. No model is ever called: its one model is scripted.
+app Waterlab {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.WorkRepositories.Agents@1;
+  use Osysharp.WorkRepositories@1;
+  use Osysharp.Assignments@1;
+  use Osysharp.Assignments.Agents@1;
+  use Osysharp.Agents@1;
+  use Osysharp.Agents.Testing@1;
+  use Osysharp.Llm@2;
+  use Osysharp.Identity@0;
+  use Osysharp.Observability;
+  use Osysharp.Storage;
+  use Osysharp.Ui;
+}

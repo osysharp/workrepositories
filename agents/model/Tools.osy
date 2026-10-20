@@ -1,0 +1,146 @@
+// The tools an agent keeps an assignment's repository with — list them in a skill's `Tools` — and the filing of what
+// each piece of agent work hands back.
+namespace Osysharp.WorkRepositories.Agents;
+
+using Osysharp.Identity;
+using Osysharp.Agents;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+
+/// How this app files what its agents find — `app.AgentFindings = new AgentFindingsSetup { FileResults = false };`.
+[AppSetting("AgentFindings")]
+public class AgentFindingsSetup {
+  /// File the result of every piece of agent work attached to an assignment as a finding in its repository.
+  public bool FileResults = true;
+}
+
+/// One item as an agent's list shows it: enough to choose what to read, and nothing of its content.
+public class ItemLine {
+  public Guid Id;
+  public string Kind = "";
+  public string Title = "";
+  public string Standing = "";
+  public int Version = 0;
+  public bool HasContributionsToReconcile = false;
+}
+
+// ── writing ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Record a piece of evidence on the assignment: something that shows a fact — a scan, a measurement, a record of
+/// another system. Say what it shows in `content`, and where it came from in `source`.
+[Action("Record a piece of evidence")]
+public string RecordEvidence(Assignment assignment, string title, string content, string source) {
+  return Recorded(assignment, ItemKind.Evidence, title, content, source, "RecordEvidence");
+}
+
+/// Record a finding on the assignment: what you conclude from the evidence. `source` says what it rests on.
+[Action("Record a finding")]
+public string RecordFinding(Assignment assignment, string title, string content, string source) {
+  return Recorded(assignment, ItemKind.Finding, title, content, source, "RecordFinding");
+}
+
+/// Record a message sent or received on the assignment: a mail, a letter, a call note.
+[Action("Record correspondence")]
+public string RecordCorrespondence(Assignment assignment, string title, string content, string source) {
+  return Recorded(assignment, ItemKind.Correspondence, title, content, source, "RecordCorrespondence");
+}
+
+/// Propose something to do on the assignment. A proposal decides nothing: somebody in charge accepts or rejects it.
+[Action("Propose an action")]
+public string ProposeAction(Assignment assignment, string title, string content) {
+  return Recorded(assignment, ItemKind.Proposal, title, content, "", "ProposeAction");
+}
+
+/// Note that an item does not agree with another item of the same assignment — `otherItemId` is that one's id —
+/// and about what. It stays open until a decision settles it.
+[Action("Note that two items disagree")]
+public string NoteItemsDisagree(RepositoryItem item, Guid otherItemId, string about) {
+  var other = RepositoryItem.FirstOrDefault(i => i.Id == otherItemId);
+  if (other == null) { throw new ValidationException($"There is no item {otherItemId} here to compare with."); }
+  NoteDisagreement(item, other!, about);
+  return "Recorded. It stays open until somebody in charge settles it with a decision.";
+}
+
+string Recorded(Assignment assignment, ItemKind kind, string title, string content, string source, string tool) {
+  var work = WorkInHand(assignment);
+  var item = AddItem(assignment, new NewItem {
+    Kind = kind, Title = title, Content = content,
+    Source = new ItemSource { From = source, Tool = tool, Ref = work == null ? null : work!.Id, RefType = work == null ? "" : "AssignmentWork" },
+  });
+  return $"Recorded as item {item.Id}.";
+}
+
+/// The piece of agent work, attached to the assignment, that whoever is acting has in hand — what an item written
+/// now is traced back to.
+AssignmentWork? WorkInHand(Assignment assignment) {
+  var me = Security.CurrentUserId;
+  if (me == null) { return null; }
+  return AssignmentWork.Where(w => w.Assignment == assignment && w.Kind == WorkKind.AgentTask && w.State == WorkState.Open && w.WaitingOn.Id == me)
+                       .OrderByDescending(w => w.Number).FirstOrDefault();
+}
+
+// ── reading, by reference ───────────────────────────────────────────────────────────────────────────────────────────
+
+/// The items of the assignment's repository: each one's id, kind, title and standing. Read one with `ReadItem`.
+[Action("List the repository's items", Query)]
+public List<ItemLine> ListItems(Assignment assignment) {
+  List<ItemLine> lines = [];
+  foreach (var i in ItemsOf(assignment)) {
+    if (i.ErasedAt != null) { continue; }
+    lines.Add(new ItemLine { Id = i.Id, Kind = i.Kind.Name, Title = i.Title, Standing = i.Standing.Name, Version = i.Current, HasContributionsToReconcile = i.Unreconciled > 0 });
+  }
+  return lines;
+}
+
+/// What one item says: the content of the version that stands.
+[Action("Read one item of the repository", Query)]
+public string ReadItem(RepositoryItem item) {
+  if (item.ErasedAt != null) { return "This item was erased."; }
+  var v = CurrentOf(item);
+  return $"{item.Kind.Name} “{item.Title}” ({item.Standing.Name.ToLower()}, version {v.Number}" + (v.From == "" ? "" : ", from " + v.From) + "):\n" + v.Content;
+}
+
+// ── what a piece of agent work hands back ───────────────────────────────────────────────────────────────────────────
+
+/// A piece of agent work attached to an assignment finished: its result is filed as a finding — unverified, as the
+/// agent's own, with the skill and its version and the receipt it came from.
+[On]
+internal void WhatAnAgentHandsBackIsFiled(AssignmentWorkClosed e) {
+  var work = e.Work;
+  if (work.Kind != WorkKind.AgentTask || work.State != WorkState.Done || work.Subject == null) { return; }
+  if (!App.Setting<AgentFindingsSetup>().FileResults) { return; }
+  var task = AgentTask.FirstOrDefault(t => t.Id == work.Subject);
+  if (task == null || task!.Result == null || task!.Result! == "") { return; }
+  var receipt = task!;
+  // Everything the item says is worked out here, as the app: inside the agent's own block a row is read with the
+  // agent's rights, and its own receipt is not the agent's to read.
+  var result = receipt.Result!;
+  var typed = result.StartsWith("{") || result.StartsWith("[");
+  var assignment = work.Assignment;
+  var title = receipt.About != "" ? receipt.About : work.Title;
+  var what = new NewItem {
+    Kind = ItemKind.Finding, Key = "agent-result:" + receipt.Id.ToString(), Title = title + " — result",
+    Content = result, ContentType = typed ? "application/json" : "text/plain", DataJson = typed ? result : "",
+    Source = new ItemSource {
+      From = $"Handed back by {AgentName(receipt.Agent)}" + (receipt.Skill == "" ? "" : $" for {BareName(receipt.Skill)}"),
+      Ref = receipt.Id, RefType = "AgentTask", Agent = receipt.Agent, Skill = receipt.Skill, SkillVersion = receipt.SkillVersion, Task = receipt.Id,
+    },
+  };
+  var agent = receipt.Actor;
+  runas (Actor.From(agent), scope: assignment) { AddItem(assignment, what); }
+}
+
+// ── handing an item to a helper ─────────────────────────────────────────────────────────────────────────────────────
+
+/// Hand items to another agent by reference: it reads exactly these — whether or not it is on the assignment — and
+/// nothing is copied. Whoever is in charge of the assignment may.
+///
+///     HandItemsTo(Agents.Of<Diagnostician>(), [photo, serviceLog]);
+public void HandItemsTo(AgentRef agent, List<RepositoryItem> items) {
+  foreach (var item in items) { OpenItemTo(item, agent.Actor); }
+}
+
+/// Take them back: its next read finds nothing.
+public void TakeItemsFrom(AgentRef agent, List<RepositoryItem> items) {
+  foreach (var item in items) { CloseItemTo(item, agent.Actor); }
+}

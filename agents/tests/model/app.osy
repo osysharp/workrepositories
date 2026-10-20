@@ -1,0 +1,129 @@
+// A lab that tests water samples.
+namespace Waterlab;
+
+using Osysharp.Identity;
+using Osysharp.Agents;
+using Osysharp.Assignments;
+using Osysharp.Assignments.Agents;
+using Osysharp.WorkRepositories;
+using Osysharp.WorkRepositories.Agents;
+
+[Role] enum LabRole { Authenticator, Chemist, Head, Analyst }
+
+partial entity RoleGrant { security { allow read when IsAuthenticated; } }
+
+policy IsChemist => RoleGrant.Any(g => g.Member == user && g.Role == LabRole.Chemist);
+policy IsHead    => RoleGrant.Any(g => g.Member == user && g.Role == LabRole.Head);
+
+policy OpensAssignments    => IsChemist || IsHead;
+policy OverseesAssignments => IsHead;
+policy UsesAgents          => IsChemist || IsHead;
+policy SupervisesAgents    => IsHead;
+policy AuditsAgents        => IsHead;
+
+/// Somebody at the lab, or an agent's own account.
+entity Person : Principal {
+  security {
+    allow read when IsAuthenticated || IsAuthenticator;
+    allow create when IsAuthenticator;
+  }
+}
+
+/// A water sample and its analysis.
+entity Sample {
+  [Required, Unique, MaxLength(40)] string Code;
+  decimal Ph;
+  decimal LeadMicrograms;
+  Assignment? Analysis;
+  security { allow read, create, update when IsAuthenticated; }
+}
+
+/// The sample's readings.
+[Action("Read the sample's readings", Query)]
+public string Readings(Sample sample) { return $"pH {sample.Ph}, lead {sample.LeadMicrograms} µg/l"; }
+
+/// What the analyst hands back.
+public class Verdict {
+  public bool Safe;
+  public string Why = "";
+}
+
+/// Judges one sample, and writes down what the readings show.
+public class AnalyseSample : Skill<Sample, Verdict> {
+  public override string Description => "Judge whether the sample is safe to drink.";
+  public override List<ActionInfo> Tools => [Actions.Of(Readings), Actions.Of(RecordEvidence), Actions.Of(RecordFinding), Actions.Of(ProposeAction),
+                                            Actions.Of(ListItems), Actions.Of(ReadItem), Actions.Of(NoteItemsDisagree),
+                                            Actions.Of(RecordCorrespondence)];
+  public override string Version => "4";
+  // Handed on by another agent, the sample is named by its id.
+  public override string HandedSchema() => HandOn.ById("The sample to judge.");
+  public override Sample Handed(string inputJson) {
+    var id = HandOn.IdIn(inputJson);
+    return Sample.Single(s => s.Id == id);
+  }
+}
+
+/// The lab's analyst.
+[Actor(Roles = [LabRole.Analyst])]
+public class Analyst : Agent {
+  public static Person Principal => new Person { Email = "analyst@waterlab.example", DisplayName = "Analyst" };
+  public override string Purpose => "You judge water samples from their readings.";
+  public override List<SkillBase> Skills => [new AnalyseSample()];
+  // What it does here it does by itself: this app's tests are not about what a person approves first.
+  public override Permits May => Permits.Everything();
+}
+
+/// A second pair of eyes, which is on no sample's analysis.
+[Actor(Roles = [LabRole.Analyst])]
+public class Reviewer : Agent {
+  public static Person Principal => new Person { Email = "reviewer@waterlab.example", DisplayName = "Reviewer" };
+}
+
+/// Signs a sample's analysis off: has the analyst judge it, and says what came of it.
+public class SignOffSample : Skill<Sample, Verdict> {
+  public override string Description => "Sign a sample's analysis off: have it judged, and say what came of it.";
+}
+
+/// The head analyst — in charge of an analysis. It hands the judging to the analyst.
+[Actor(Roles = [LabRole.Analyst])]
+public class HeadAnalyst : Agent {
+  public static Person Principal => new Person { Email = "head-analyst@waterlab.example", DisplayName = "Head analyst" };
+  public override string Purpose => "You sign water samples' analyses off.";
+  public override List<SkillBase> Skills => [new SignOffSample()];
+  public override Permits May => Permits.Everything();
+  public override Delegation Delegates => new Delegation { To = [Specialist.Of<Analyst>(new AnalyseSample())] };
+}
+
+/// Put the head analyst on a sample's analysis, and have it sign the analysis off.
+public AgentOutcome<Verdict> SignOff(Sample sample) {
+  AddParticipant(sample.Analysis!, Agents.Of<HeadAnalyst>().Actor, ParticipantRole.Assignee);
+  UnitOfWork.Commit();
+  return await AssignedWork.Do(sample.Analysis!, Agents.Of<HeadAnalyst>(), new SignOffSample(), sample, key: "sign-off",
+                               about: "Sign sample " + sample.Code + " off");
+}
+
+/// Open a sample's analysis, with the analyst on it.
+public Assignment OpenAnalysis(Sample sample) {
+  var a = OpenAssignment(new NewAssignment {
+    Title = "Analyse sample " + sample.Code, Goal = "We know whether sample " + sample.Code + " is safe to drink.",
+    Criteria = ["A verdict is on file"], Assignees = [Agents.Of<Analyst>().Actor],
+  });
+  sample.Analysis = a;
+  return a;
+}
+
+/// Have the analyst judge the sample.
+public AgentOutcome<Verdict> Analyse(Sample sample) {
+  return await AssignedWork.Do(sample.Analysis!, Agents.Of<Analyst>(), new AnalyseSample(), sample, key: "analyse", about: "Judge sample " + sample.Code);
+}
+
+/// Hand the reviewer one item, and take it back.
+public void AskTheReviewer(RepositoryItem item) { HandItemsTo(Agents.Of<Reviewer>(), [item]); }
+public void ThankTheReviewer(RepositoryItem item) { TakeItemsFrom(Agents.Of<Reviewer>(), [item]); }
+
+/// What the reviewer can read of the repositories, as itself.
+public int ReviewerReads() {
+  var n = 0;
+  runas (Reviewer) { n = RepositoryItem.Count(); }
+  return n;
+}

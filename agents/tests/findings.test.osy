@@ -1,0 +1,204 @@
+// Osysharp.WorkRepositories.Agents — what an agent finds lands in the assignment's repository as items: written with
+// its tools as the agent's own, for whoever asked; read by reference; and what it hands back filed as a finding.
+using Osysharp.Identity;
+using Osysharp.Llm;
+using Osysharp.Agents;
+using Osysharp.Agents.Testing;
+using Osysharp.Assignments;
+using Osysharp.Assignments.Agents;
+using Osysharp.WorkRepositories;
+using Osysharp.WorkRepositories.Agents;
+using Waterlab;
+
+[TestFixture]
+void Lab() {
+  var cleo = new Person { Email = "cleo@waterlab.example", DisplayName = "Cleo Marsh" };
+  var hugo = new Person { Email = "hugo@waterlab.example", DisplayName = "Hugo Lind" };
+  var ines = new Person { Email = "ines@waterlab.example", DisplayName = "Ines Vale" };
+  new RoleGrant { Member = cleo, Role = LabRole.Chemist };
+  new RoleGrant { Member = hugo, Role = LabRole.Chemist };
+  new RoleGrant { Member = ines, Role = LabRole.Head };
+  new Sample { Code = "W-17", Ph = 6.1m, LeadMicrograms = 14m };
+  new AgentSeat { Agent = "Waterlab.Analyst", Sponsor = ines };
+  new AgentSeat { Agent = "Waterlab.Reviewer", Sponsor = ines };
+  new AgentSeat { Agent = "Waterlab.HeadAnalyst", Sponsor = ines };
+}
+
+principal Cleo => Person.Single(p => p.Email == "cleo@waterlab.example");
+principal Hugo => Person.Single(p => p.Email == "hugo@waterlab.example");
+principal Ines => Person.Single(p => p.Email == "ines@waterlab.example");
+
+Sample W17() { return Sample.Single(s => s.Code == "W-17"); }
+
+/// Cleo opens the analysis. Answers the assignment's id.
+Guid Opened() {
+  Guid id = Guid.Empty;
+  runas (Cleo) { id = OpenAnalysis(W17()).Id; }
+  return id;
+}
+
+string SampleArg() { return "{\"sample\":\"" + W17().Id.ToString() + "\"}"; }
+string Write(Guid a, string title, string content, string source) {
+  return "{\"assignment\":\"" + a.ToString() + "\",\"title\":\"" + title + "\",\"content\":\"" + content + "\",\"source\":\"" + source + "\"}";
+}
+
+[Test(Lab)]
+void what_an_agent_writes_down_is_an_item_of_its_own_with_where_it_came_from() {
+  var a = Opened();
+  Guid task = Guid.Empty;
+  runas (Cleo) {
+    var script = AgentScript.Of(
+      Says.Tool(Actions.Of(Readings), SampleArg()),
+      Says.Tool(Actions.Of(RecordEvidence), Write(a, "Readings of W-17", "pH 6.1, lead 14 µg/l", "The lab's instrument log")),
+      Says.Tool(Actions.Of(RecordFinding), Write(a, "Lead is over the limit", "14 µg/l against a limit of 10.", "The readings of W-17")),
+      Says.HandBack(new Verdict { Safe = false, Why = "Lead is over the limit." }));
+    ScriptedAnswer.Stub((model, request) => script.Answer(model, request));
+    task = Analyse(W17()).Task;
+  }
+  Background.Settle();
+  runas (Cleo) {
+    var analysis = Assignment.Single(x => x.Id == a);
+    var work = WorkOf(analysis, "analyse")!;
+    // The evidence: the agent's own, written with a tool, traced to the piece of work it was written in.
+    var evidence = ItemsOf(analysis, ItemKind.Evidence).Single();
+    Assert.Equal(ContributorKind.Actor, evidence.AddedAs);
+    Assert.Equal(Agents.Of<Analyst>().Actor.Id, evidence.AddedBy!.Id);
+    var v = CurrentOf(evidence);
+    Assert.Equal("pH 6.1, lead 14 µg/l", v.Content);
+    Assert.Equal("The lab's instrument log", v.From);
+    Assert.Equal("RecordEvidence", v.Tool);
+    Assert.Equal(work.Id, v.SourceRef);
+    Assert.Equal("AssignmentWork", v.SourceType);
+    // Two findings: the one it wrote down on the way, and what it handed back — filed with its receipt, because this
+    // app files results (`app.AgentFindings`, model/setup.osy).
+    Assert.True(App.Setting<AgentFindingsSetup>().FileResults);
+    var findings = ItemsOf(analysis, ItemKind.Finding);
+    Assert.Equal(["Lead is over the limit", "Judge sample W-17 — result"], findings.Select(i => i.Title).ToList());
+    var filed = CurrentOf(findings[1]);
+    Assert.Equal("Waterlab.Analyst", filed.Agent);
+    Assert.Equal("Waterlab.AnalyseSample", filed.Skill);
+    Assert.Equal("4", filed.SkillVersion);
+    Assert.Equal(task, filed.Task);
+    Assert.Equal("application/json", filed.ContentType);
+    Assert.Contains("\"Safe\":false", filed.Content);
+    Assert.Equal(ContributorKind.Actor, findings[1].AddedAs);
+    // Nothing an agent says is taken as right until somebody in charge says so.
+    Assert.True(findings.All(i => i.Standing == ItemStanding.Unverified));
+    // Each was progress on the analysis, pointing at the item.
+    Assert.Equal(3, analysis.Activity.Count(l => l.Progress && l.ReferenceType == "RepositoryItem"));
+  }
+}
+
+[Test(Lab)]
+void an_agent_reads_the_repository_by_reference_and_only_what_whoever_asked_may() {
+  var a = Opened();
+  runas (Cleo) {
+    var analysis = Assignment.Single(x => x.Id == a);
+    AddItem(analysis, new NewItem { Kind = ItemKind.Document, Key = "method", Title = "Method note", Content = "Lead above 10 µg/l fails." });
+    AddItem(analysis, new NewItem { Kind = ItemKind.Input, Key = "private", Title = "Cleo's private note", Content = "The client is impatient.", Restricted = true });
+  }
+  runas (Ines) { AddParticipant(Assignment.Single(x => x.Id == a), Hugo, ParticipantRole.Contributor); }
+  Guid method = Guid.Empty;
+  Guid secret = Guid.Empty;
+  runas (Cleo) {
+    method = ItemOf(Assignment.Single(x => x.Id == a), "method")!.Id;
+    secret = ItemOf(Assignment.Single(x => x.Id == a), "private")!.Id;
+  }
+  // Hugo is on the analysis and may not read Cleo's restricted note. Asked by him, the agent's tools list and read
+  // what he may — and a tool handed the note's id is handed nothing.
+  runas (Hugo) {
+    var script = AgentScript.Of(
+      Says.Tool(Actions.Of(ListItems), "{\"assignment\":\"" + a.ToString() + "\"}"),
+      Says.Tool(Actions.Of(ReadItem), "{\"item\":\"" + method.ToString() + "\"}"),
+      Says.Tool(Actions.Of(ReadItem), "{\"item\":\"" + secret.ToString() + "\"}"),
+      Says.HandBack(new Verdict { Safe = false, Why = "Lead is over the limit." }));
+    List<string> told = [];
+    ScriptedAnswer.Stub((model, request) => { told.Add(Scripted.Asked(request)); return script.Answer(model, request); });
+    var outcome = Analyse(W17());
+    Assert.True(outcome.Done);
+    var said = Trajectory.Said(outcome.Task);
+    Assert.Contains("ListItems answered.", said);
+    Assert.Equal(1, said.Count(s => s == "ReadItem answered."));
+    Assert.Equal(1, said.Count(s => s.StartsWith("ReadItem did not run")));
+  }
+}
+
+[Test(Lab)]
+void an_item_is_handed_to_a_helper_by_reference_and_taken_back() {
+  var a = Opened();
+  Guid method = Guid.Empty;
+  runas (Cleo) {
+    var analysis = Assignment.Single(x => x.Id == a);
+    method = AddItem(analysis, new NewItem { Kind = ItemKind.Document, Title = "Method note", Content = "Lead above 10 µg/l fails." }).Id;
+    AddItem(analysis, new NewItem { Kind = ItemKind.Input, Title = "Client's letter", Content = "Please hurry." });
+  }
+  // The reviewer is on no analysis: it reads nothing.
+  Assert.Equal(0, ReviewerReads());
+  runas (Cleo) { AskTheReviewer(RepositoryItem.Single(i => i.Id == method)); }
+  // Handed the method note, it reads the method note — one item, not the repository.
+  Assert.Equal(1, ReviewerReads());
+  runas (Cleo) { ThankTheReviewer(RepositoryItem.Single(i => i.Id == method)); }
+  Assert.Equal(0, ReviewerReads());
+  // Only whoever is in charge of the analysis hands its items on.
+  runas (Ines) { AddParticipant(Assignment.Single(x => x.Id == a), Hugo, ParticipantRole.Contributor); }
+  runas (Hugo) { Assert.Throws<NotAuthorized>(() => AskTheReviewer(RepositoryItem.Single(i => i.Id == method))); }
+}
+
+[Test(Lab)]
+void a_message_an_agent_records_is_correspondence_of_its_own() {
+  var a = Opened();
+  runas (Cleo) {
+    var script = AgentScript.Of(
+      Says.Tool(Actions.Of(RecordCorrespondence), Write(a, "Asked the client for a second sample", "Could you send a second sample of W-17?", "Sent by mail")),
+      Says.HandBack(new Verdict { Safe = false, Why = "Waiting for a second sample." }));
+    ScriptedAnswer.Stub((model, request) => script.Answer(model, request));
+    Assert.True(Analyse(W17()).Done);
+  }
+  Background.Settle();
+  runas (Cleo) {
+    var analysis = Assignment.Single(x => x.Id == a);
+    var letter = ItemsOf(analysis, ItemKind.Correspondence).Single();
+    Assert.Equal("Asked the client for a second sample", letter.Title);
+    Assert.Equal(Agents.Of<Analyst>().Actor.Id, letter.AddedBy!.Id);
+    var v = CurrentOf(letter);
+    Assert.Equal("Sent by mail", v.From);
+    Assert.Equal("RecordCorrespondence", v.Tool);
+    Assert.Equal(WorkOf(analysis, "analyse")!.Id, v.SourceRef);
+  }
+}
+
+[Test(Lab)]
+void what_a_piece_handed_on_writes_down_is_traced_to_that_piece_and_each_piece_is_filed() {
+  var a = Opened();
+  Guid top = Guid.Empty;
+  runas (Cleo) {
+    var cast = AgentCast.Of()
+      .Plays<HeadAnalyst>(AgentScript.Of(
+        Says.HandTo<Analyst>(new AnalyseSample(), Says.Row(W17().Id)),
+        Says.HandBack(new Verdict { Safe = false, Why = "Lead is over the limit." })))
+      .Plays<Analyst>(AgentScript.Of(
+        Says.Tool(Actions.Of(RecordEvidence), Write(a, "Readings of W-17", "pH 6.1, lead 14 µg/l", "The lab's instrument log")),
+        Says.HandBack(new Verdict { Safe = false, Why = "Lead is over the limit." })));
+    ScriptedAnswer.Stub((model, request) => cast.Answer(model, request));
+    var outcome = SignOff(W17());
+    Assert.Equal("", outcome.Problem);
+    top = outcome.Task;
+  }
+  Background.Settle();
+  runas (Cleo) {
+    var analysis = Assignment.Single(x => x.Id == a);
+    var handedOn = AgentTask.Single(t => t.Parent.Id == top);
+    var pieces = AssignedWork.Of(analysis);
+    Assert.Equal(2, pieces.Count);
+    var piece = pieces.Single(w => w.Subject == handedOn.Id);
+    // The evidence is the analyst's, traced to the piece the analyst was handed — not to the head analyst's.
+    var evidence = ItemsOf(analysis, ItemKind.Evidence).Single();
+    Assert.Equal(Agents.Of<Analyst>().Actor.Id, evidence.AddedBy!.Id);
+    Assert.Equal(piece.Id, CurrentOf(evidence).SourceRef);
+    // What each piece handed back is filed with the agent, the skill and the receipt it came from.
+    var filed = ItemsOf(analysis, ItemKind.Finding).Select(i => CurrentOf(i)).ToList();
+    Assert.Equal(2, filed.Count);
+    Assert.True(filed.Any(f => f.Agent == "Waterlab.Analyst" && f.Skill == "Waterlab.AnalyseSample" && f.Task == handedOn.Id));
+    Assert.True(filed.Any(f => f.Agent == "Waterlab.HeadAnalyst" && f.Skill == "Waterlab.SignOffSample" && f.Task == top));
+  }
+}

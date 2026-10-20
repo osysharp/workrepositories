@@ -1,0 +1,19 @@
+// The lab's model and agents. In a file of its own with no `namespace`, because an `app.X = …` statement's value is
+// resolved outside the file's namespace.
+using Osysharp.Agents;
+using Osysharp.Llm;
+using Osysharp.WorkRepositories.Agents;
+using Waterlab;
+
+app.Llm = new LlmSetup {
+  Models = [
+    new LlmModel { Name = "Small", Client = new ScriptedModel { Name = "Small" }, Model = "scripted-small",
+                   Price = new LlmPrice { Input = 1, Output = 5 }, MaxOutputTokens = 1000 },
+  ],
+  Default = "Small",
+};
+
+app.Agents = new AgentsSetup { Agents = [new Analyst(), new Reviewer(), new HeadAnalyst()], TaskBudget = 0.05m };
+
+// What each piece of agent work on an analysis hands back is filed as a finding (the kit's default, said here).
+app.AgentFindings = new AgentFindingsSetup { FileResults = true };
