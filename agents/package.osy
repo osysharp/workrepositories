@@ -15,14 +15,14 @@
 //
 // ⚑ A BRIDGE. An app that uses Osysharp.WorkRepositories and Osysharp.Agents writes nothing to get it.
 package Osysharp.WorkRepositories.Agents {
-  version     "1.1.0";
-  minPlatform "0.14.0";
+  version     "1.2.0";
+  minPlatform "0.17.0";
   summary     "an agent's findings as repository items: tools that record evidence, findings, correspondence and proposals as the agent, for whoever asked, with their source and the piece of work they were written in; tools that list and read items by reference; and the result of every piece of agent work attached to an assignment filed as an unverified finding with its receipt.";
   completes   Osysharp.WorkRepositories@1, Osysharp.Agents@1;
   model "model/*.osy";
   tests "tests";
   use Osysharp.WorkRepositories@1;
-  use Osysharp.Assignments@1;
+  use Osysharp.Assignments@2;
   use Osysharp.Assignments.Agents@1;
   use Osysharp.Agents@1;
   use Osysharp.Llm@2;
