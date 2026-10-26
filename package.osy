@@ -21,8 +21,8 @@
 //   long it is kept. A restricted item is read by whoever added it and by the people the kind — or the item — was
 //   opened to; everything else is read by whoever is on the assignment.
 package Osysharp.WorkRepositories {
-  version     "1.1.0";
-  minPlatform "0.14.0";
+  version     "1.2.0";
+  minPlatform "0.17.0";
   summary     "the shared repository of an assignment: evidence, correspondence, findings, documents, proposals, decisions and deliverables as typed items — each version kept with who or what added it and from what source, concurrent contributions kept side by side, standings and visible disagreements, access and retention per kind, items opened one by one to somebody who is not on the assignment.";
 
   model "model/**/*.osy";
@@ -32,7 +32,7 @@ package Osysharp.WorkRepositories {
   personal Identity;
   personal Content;
   // The assignment a repository belongs to, and who is on it.
-  use Osysharp.Assignments@1;
+  use Osysharp.Assignments@2;
   use Osysharp.Identity@0;
   // A version may be a file.
   use Osysharp.Storage;
