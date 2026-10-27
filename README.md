@@ -114,3 +114,107 @@ osy test kits/work-repositories/tests
 - Uses [`Osysharp.Assignments`](../assignments), `Osysharp.Identity`, `Osysharp.Storage` (a version may be a file)
   and `Osysharp.Ui`.
 - With it: [`Osysharp.WorkRepositories.Agents`](../work-repositories-agents) lands an agent's findings as items.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+using Hiring;
+
+[Test(Office)]
+void a_repository_is_read_by_whoever_is_on_the_assignment_and_by_nobody_else() {
+  var hire = OpenTheHire();
+  runas (Rut) { AddItem(Hire(hire), new NewItem { Kind = ItemKind.Input, Title = "The role", Content = "Senior consultant." }); }
+  runas (Ivo) {
+    Assert.Equal(1, ItemsOf(Hire(hire)).Count);
+    Assert.Equal("Senior consultant.", CurrentOf(ItemsOf(Hire(hire))[0]).Content);
+  }
+  // Pia interviews for other hires. She is not on this one: nothing of its repository is hers to read.
+  runas (Pia) {
+    Assert.Equal(0, RepositoryItem.Count());
+    Assert.Equal(0, RepositoryItemVersion.Count());
+    Assert.Equal(0, Assignment.Count());
+  }
+}
+```
+
+From [`tests/access.test.osy`](tests/access.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+using Hiring;
+
+[Test(Office)]
+void a_disagreement_about_restricted_items_is_read_only_by_whoever_reads_both() {
+  var hire = OpenTheHire();
+  Guid ivos = Guid.Empty;
+  Guid lenas = Guid.Empty;
+  runas (Ivo) { ivos = GiveFeedback(Hire(hire), "M. Okafor", "Could not explain a cutover plan.").Id; }
+  runas (Lena) { lenas = GiveFeedback(Hire(hire), "M. Okafor", "Walked through a cutover plan.").Id; }
+  runas (Rut) { OpenKindTo(Hire(hire), ItemKind.Finding, Hanna); }
+  runas (Hanna) { NoteDisagreement(Item(ivos), Item(lenas), "Whether the candidate can plan a cutover"); }
+
+  // The hiring manager was given the feedback: she reads that the two disagree, and about what.
+  runas (Hanna) { Assert.Equal("Whether the candidate can plan a cutover", OpenDisagreements(Hire(hire)).Single().About); }
+  // Each interviewer reads their own feedback and not the other's — so neither reads the disagreement, whose
+  // subject alone would tell them what the other thought.
+  runas (Ivo) {
+    Assert.Equal(0, RepositoryDisagreement.Count());
+    Assert.Equal(0, OpenDisagreements(Hire(hire)).Count);
+    Assert.False(ActivityOf(Hire(hire)).Any(l => l.Said.Contains("cutover")));
+    Assert.Contains("A disagreement between two items was recorded.", ActivityOf(Hire(hire)).Select(l => l.Said).ToList());
+  }
+  runas (Lena) { Assert.Equal(0, RepositoryDisagreement.Count()); }
+  // The recruiter oversees every hire, and was not given the feedback either.
+  runas (Rut) { Assert.Equal(0, RepositoryDisagreement.Count()); }
+  // Opened to everybody on the hire, both items — and the disagreement — are everybody's to read.
+  runas (Hanna) { RestrictItem(Item(ivos), false); RestrictItem(Item(lenas), false); }
+  runas (Ivo) { Assert.Equal(1, OpenDisagreements(Hire(hire)).Count); }
+}
+```
+
+From [`tests/disagreements.test.osy`](tests/disagreements.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Assignments;
+using Osysharp.WorkRepositories;
+using Hiring;
+
+[Test(Office)]
+void whoever_is_in_charge_erases_an_item_and_only_the_records_officer_erases_from_the_activity() {
+  var hire = OpenTheHire();
+  Guid cv = Guid.Empty;
+  runas (Rut) { cv = AddItem(Hire(hire), new NewItem { Kind = ItemKind.Document, Title = "Application: S. Lind", Content = "Six years." }).Id; }
+  // Rut owns the hire: she erases the item. She may not erase from an assignment's activity, so the line that named
+  // the application stands until somebody who may takes it out.
+  runas (Rut) { EraseItem(Item(cv), "Sent to us by mistake."); }
+  Background.Settle();
+  runas (Rut) {
+    Assert.Equal("", CurrentOf(Item(cv)).Content);
+    Assert.Contains("Application: S. Lind", ActivityText(Hire(hire)));
+    Assert.Denied(() => EraseWordsFromActivity(Hire(hire), ["Application: S. Lind"], "an item that was erased", "Tidying up."));
+  }
+  runas (Otto) { Assert.Equal(1, EraseWordsFromActivity(Hire(hire), ["Application: S. Lind"], "an item that was erased", "The item it named was erased.")); }
+  runas (Rut) { Assert.DoesNotContain("Lind", ActivityText(Hire(hire))); }
+}
+```
+
+From [`tests/erasure.test.osy`](tests/erasure.test.osy).
+
+## Learn more
+
+- [The Osysharp.WorkRepositories reference](https://osysharp.com/reference/agent/kit-work-repositories/)
+- [Osysharp.WorkRepositories in the package catalogue](https://osysharp.com/packages/#osysharp-workrepositories)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).
