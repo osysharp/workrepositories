@@ -64,3 +64,90 @@ osy test kits/work-repositories-agents/tests
   `use Osysharp.WorkRepositories.Agents@1;`
 - Source: [`kits/work-repositories-agents`](.) — `model/Tools.osy`
 - Uses [`Osysharp.Assignments.Agents`](../assignments-agents) to know which piece of agent work an item came from.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Llm;
+using Osysharp.Agents;
+using Osysharp.Agents.Testing;
+using Osysharp.Assignments;
+using Osysharp.Assignments.Agents;
+using Osysharp.WorkRepositories;
+using Osysharp.WorkRepositories.Agents;
+using Waterlab;
+
+[Test(Lab)]
+void an_item_is_handed_to_a_helper_by_reference_and_taken_back() {
+  var a = Opened();
+  Guid method = Guid.Empty;
+  runas (Cleo) {
+    var analysis = Assignment.Single(x => x.Id == a);
+    method = AddItem(analysis, new NewItem { Kind = ItemKind.Document, Title = "Method note", Content = "Lead above 10 µg/l fails." }).Id;
+    AddItem(analysis, new NewItem { Kind = ItemKind.Input, Title = "Client's letter", Content = "Please hurry." });
+  }
+  // The reviewer is on no analysis: it reads nothing.
+  Assert.Equal(0, ReviewerReads());
+  runas (Cleo) { AskTheReviewer(RepositoryItem.Single(i => i.Id == method)); }
+  // Handed the method note, it reads the method note — one item, not the repository.
+  Assert.Equal(1, ReviewerReads());
+  runas (Cleo) { ThankTheReviewer(RepositoryItem.Single(i => i.Id == method)); }
+  Assert.Equal(0, ReviewerReads());
+  // Only whoever is in charge of the analysis hands its items on.
+  runas (Ines) { AddParticipant(Assignment.Single(x => x.Id == a), Hugo, ParticipantRole.Contributor); }
+  runas (Hugo) { Assert.Throws<NotAuthorized>(() => AskTheReviewer(RepositoryItem.Single(i => i.Id == method))); }
+}
+```
+
+From [`tests/findings.test.osy`](tests/findings.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Llm;
+using Osysharp.Agents;
+using Osysharp.Agents.Testing;
+using Osysharp.Assignments;
+using Osysharp.Assignments.Agents;
+using Osysharp.WorkRepositories;
+using Osysharp.WorkRepositories.Agents;
+using Waterlab;
+
+[Test(Lab)]
+void a_message_an_agent_records_is_correspondence_of_its_own() {
+  var a = Opened();
+  runas (Cleo) {
+    var script = AgentScript.Of(
+      Says.Tool(Actions.Of(RecordCorrespondence), Write(a, "Asked the client for a second sample", "Could you send a second sample of W-17?", "Sent by mail")),
+      Says.HandBack(new Verdict { Safe = false, Why = "Waiting for a second sample." }));
+    ScriptedAnswer.Stub((model, request) => script.Answer(model, request));
+    Assert.True(Analyse(W17()).Done);
+  }
+  Background.Settle();
+  runas (Cleo) {
+    var analysis = Assignment.Single(x => x.Id == a);
+    var letter = ItemsOf(analysis, ItemKind.Correspondence).Single();
+    Assert.Equal("Asked the client for a second sample", letter.Title);
+    Assert.Equal(Agents.Of<Analyst>().Actor.Id, letter.AddedBy!.Id);
+    var v = CurrentOf(letter);
+    Assert.Equal("Sent by mail", v.From);
+    Assert.Equal("RecordCorrespondence", v.Tool);
+    Assert.Equal(WorkOf(analysis, "analyse")!.Id, v.SourceRef);
+  }
+}
+```
+
+From [`tests/findings.test.osy`](tests/findings.test.osy).
+
+## Learn more
+
+- [The Osysharp.WorkRepositories.Agents reference](https://osysharp.com/reference/agent/kit-work-repositories-agents/)
+- [Osysharp.WorkRepositories.Agents in the package catalogue](https://osysharp.com/packages/#osysharp-workrepositories-agents)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).
