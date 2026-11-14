@@ -61,7 +61,7 @@ osy test kits/work-repositories-agents/tests
 
 - Package: `Osysharp.WorkRepositories.Agents` — it arrives by itself in an app that uses
   [`Osysharp.WorkRepositories`](../work-repositories) and [`Osysharp.Agents`](../agents); or
-  `use Osysharp.WorkRepositories.Agents@1;`
+  `use Osysharp.WorkRepositories.Agents@2;`
 - Source: [`kits/work-repositories-agents`](.) — `model/Tools.osy`
 - Uses [`Osysharp.Assignments.Agents`](../assignments-agents) to know which piece of agent work an item came from.
 
