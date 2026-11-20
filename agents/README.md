@@ -89,13 +89,19 @@ void an_item_is_handed_to_a_helper_by_reference_and_taken_back() {
     method = AddItem(analysis, new NewItem { Kind = ItemKind.Document, Title = "Method note", Content = "Lead above 10 µg/l fails." }).Id;
     AddItem(analysis, new NewItem { Kind = ItemKind.Input, Title = "Client's letter", Content = "Please hurry." });
   }
+  // What the reviewer reads, as itself — asked in the test's own body: app code may not act as an agent at all, only
+  // the agents kit does (ORGPOL OP-FP3b-1).
+  var reads = -1;
   // The reviewer is on no analysis: it reads nothing.
-  Assert.Equal(0, ReviewerReads());
+  runas (Reviewer) { reads = RepositoryItem.Count(); }
+  Assert.Equal(0, reads);
   runas (Cleo) { AskTheReviewer(RepositoryItem.Single(i => i.Id == method)); }
   // Handed the method note, it reads the method note — one item, not the repository.
-  Assert.Equal(1, ReviewerReads());
+  runas (Reviewer) { reads = RepositoryItem.Count(); }
+  Assert.Equal(1, reads);
   runas (Cleo) { ThankTheReviewer(RepositoryItem.Single(i => i.Id == method)); }
-  Assert.Equal(0, ReviewerReads());
+  runas (Reviewer) { reads = RepositoryItem.Count(); }
+  Assert.Equal(0, reads);
   // Only whoever is in charge of the analysis hands its items on.
   runas (Ines) { AddParticipant(Assignment.Single(x => x.Id == a), Hugo, ParticipantRole.Contributor); }
   runas (Hugo) { Assert.Throws<NotAuthorized>(() => AskTheReviewer(RepositoryItem.Single(i => i.Id == method))); }

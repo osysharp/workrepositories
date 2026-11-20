@@ -121,9 +121,3 @@ public AgentOutcome<Verdict> Analyse(Sample sample) {
 public void AskTheReviewer(RepositoryItem item) { HandItemsTo(Agents.Of<Reviewer>(), [item]); }
 public void ThankTheReviewer(RepositoryItem item) { TakeItemsFrom(Agents.Of<Reviewer>(), [item]); }
 
-/// What the reviewer can read of the repositories, as itself.
-public int ReviewerReads() {
-  var n = 0;
-  runas (Reviewer) { n = RepositoryItem.Count(); }
-  return n;
-}

@@ -10,7 +10,7 @@ app Waterlab {
   use Osysharp.Assignments.Agents@2;
   use Osysharp.Agents@2;
   use Osysharp.Agents.Testing@2;
-  use Osysharp.Llm@2;
+  use Osysharp.Llm@3;
   use Osysharp.Identity@0;
   use Osysharp.Observability;
   use Osysharp.Storage;
