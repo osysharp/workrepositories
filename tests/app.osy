@@ -6,7 +6,7 @@ app Hiring {
   tests "**/*.test.osy";
   use Osysharp.WorkRepositories@1;
   use Osysharp.Assignments@2;
-  use Osysharp.Llm@2;
+  use Osysharp.Llm@3;
   use Osysharp.Identity@0;
   use Osysharp.Observability;
   use Osysharp.Workflow;
